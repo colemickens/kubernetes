@@ -37,3 +37,8 @@ Source: https://azure.microsoft.com/en-us/documentation/articles/azure-subscript
 1. What is Route's nameHint supposed to be used for? Especially given that it's only supplied during Create and not during Delete?
 
 2. Are ports cleared out whenever EnsureDeleted is called? If not, is it okay to do that and then use my same reconcile logic?
+
+
+## Other considerations
+
+1. AWS renders out a DNS name for the public ip - we can too... maybe that's another use for cloudprovider.GetLoadBalancerName()?
