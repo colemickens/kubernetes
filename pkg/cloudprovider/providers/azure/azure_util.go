@@ -128,6 +128,12 @@ func getRuleName(service *api.Service, port api.ServicePort) string {
 		port.Protocol, port.Port, port.NodePort)
 }
 
+func getServiceName(service *api.Service) string {
+	return fmt.Sprintf("%s/%s", service.Namespace, service.Name)
+	//return fmt.Sprintf("%s/%s/[%s]", service.Namespace, service.Name,
+	//	cloudprovider.GetLoadBalancerName(service))
+}
+
 func getRulePrefix(service *api.Service) string {
 	return cloudprovider.GetLoadBalancerName(service)
 }
