@@ -38,6 +38,7 @@ import (
 
 	"k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/pkg/api"
+	apierrors "k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/api/service"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -259,7 +260,18 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				client, err := clients.ClientForVersion(&unversioned.GroupVersion{Version: "v1"})
 				CheckErr(err)
 
-				versions, gvks, err := GetThirdPartyGroupVersions(client.Discovery())
+				var versions []unversioned.GroupVersion
+				var gvks []unversioned.GroupVersionKind
+				retries := 3
+				for i := 0; i < retries; i++ {
+					versions, gvks, err = GetThirdPartyGroupVersions(client.Discovery())
+					// Retry if we got a NotFound error, because user may delete
+					// a thirdparty group when the GetThirdPartyGroupVersions is
+					// running.
+					if err == nil || !apierrors.IsNotFound(err) {
+						break
+					}
+				}
 				CheckErr(err)
 				if len(versions) > 0 {
 					priorityMapper, ok := mapper.RESTMapper.(meta.PriorityRESTMapper)
@@ -361,7 +373,8 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 				gv := gvk.GroupVersion()
 				cfg.GroupVersion = &gv
 				cfg.APIPath = "/apis"
-				cfg.Codec = thirdpartyresourcedata.NewCodec(c.ExtensionsClient.RESTClient.Codec(), gvk.Kind)
+				cfg.Codec = thirdpartyresourcedata.NewCodec(c.ExtensionsClient.RESTClient.Codec(), gvk)
+				cfg.NegotiatedSerializer = thirdpartyresourcedata.NewNegotiatedSerializer(api.Codecs, gvk.Kind, gv, gv)
 				return restclient.RESTClientFor(cfg)
 			}
 		},
@@ -386,10 +399,14 @@ func NewFactory(optionalClientConfig clientcmd.ClientConfig) *Factory {
 			return nil, fmt.Errorf("no description has been implemented for %q", mapping.GroupVersionKind.Kind)
 		},
 		Decoder: func(toInternal bool) runtime.Decoder {
+			var decoder runtime.Decoder
 			if toInternal {
-				return api.Codecs.UniversalDecoder()
+				decoder = api.Codecs.UniversalDecoder()
+			} else {
+				decoder = api.Codecs.UniversalDeserializer()
 			}
-			return api.Codecs.UniversalDeserializer()
+			return thirdpartyresourcedata.NewDecoder(decoder, "")
+
 		},
 		JSONEncoder: func() runtime.Encoder {
 			return api.Codecs.LegacyCodec(registered.EnabledVersions()...)

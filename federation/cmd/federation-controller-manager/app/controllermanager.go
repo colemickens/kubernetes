@@ -25,14 +25,13 @@ import (
 	"net/http/pprof"
 	"strconv"
 
-	"k8s.io/kubernetes/federation/cmd/federation-controller-manager/app/options"
-	"k8s.io/kubernetes/pkg/client/restclient"
-
-	internalclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset"
 	federationclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	"k8s.io/kubernetes/federation/cmd/federation-controller-manager/app/options"
 	"k8s.io/kubernetes/federation/pkg/dnsprovider"
 	clustercontroller "k8s.io/kubernetes/federation/pkg/federation-controller/cluster"
 	servicecontroller "k8s.io/kubernetes/federation/pkg/federation-controller/service"
+	"k8s.io/kubernetes/federation/pkg/federation-controller/util"
+	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/util/configz"
@@ -42,6 +41,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+)
+
+const (
+	// "federation-apiserver-secret" is a reserved secret name which stores the kubeconfig for federation-apiserver.
+	FederationAPIServerSecretName = "federation-apiserver-secret"
 )
 
 // NewControllerManagerCommand creates a *cobra.Command object with default parameters
@@ -71,7 +75,9 @@ func Run(s *options.CMServer) error {
 	} else {
 		glog.Errorf("unable to register configz: %s", err)
 	}
-	restClientCfg, err := clientcmd.BuildConfigFromFlags(s.Master, s.Kubeconfig)
+	// Create the config to talk to federation-apiserver.
+	kubeconfigGetter := util.KubeconfigGetterForSecret(FederationAPIServerSecretName)
+	restClientCfg, err := clientcmd.BuildConfigFromKubeconfigGetter(s.Master, kubeconfigGetter)
 	if err != nil {
 		return err
 	}
@@ -108,14 +114,14 @@ func Run(s *options.CMServer) error {
 
 func StartControllers(s *options.CMServer, restClientCfg *restclient.Config) error {
 
-	federationClientSet := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, "cluster-controller"))
-	go clustercontroller.NewclusterController(federationClientSet, s.ClusterMonitorPeriod.Duration).Run()
+	ccClientset := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, "cluster-controller"))
+	go clustercontroller.NewclusterController(ccClientset, s.ClusterMonitorPeriod.Duration).Run()
 	dns, err := dnsprovider.InitDnsProvider(s.DnsProvider, s.DnsConfigFile)
 	if err != nil {
 		glog.Fatalf("Cloud provider could not be initialized: %v", err)
 	}
-	scclientset := internalclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, servicecontroller.UserAgentName))
-	servicecontroller := servicecontroller.New(scclientset, dns)
+	scClientset := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, servicecontroller.UserAgentName))
+	servicecontroller := servicecontroller.New(scClientset, dns)
 	if err := servicecontroller.Run(s.ConcurrentServiceSyncs, wait.NeverStop); err != nil {
 		glog.Errorf("Failed to start service controller: %v", err)
 	}

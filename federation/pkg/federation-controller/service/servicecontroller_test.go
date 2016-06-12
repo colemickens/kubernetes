@@ -17,44 +17,62 @@ limitations under the License.
 package service
 
 import (
+	"sync"
 	"testing"
 
-	"k8s.io/kubernetes/federation/apis/federation"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/federation/pkg/dnsprovider/providers/google/clouddns" // Only for unit testing purposes.
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/util/sets"
 )
 
 func TestGetClusterConditionPredicate(t *testing.T) {
+	fakedns, _ := clouddns.NewFakeInterface() // No need to check for unsupported interfaces, as the fake interface supports everything that's required.
+	serviceController := ServiceController{
+		dns:          fakedns,
+		serviceCache: &serviceCache{fedServiceMap: make(map[string]*cachedService)},
+		clusterCache: &clusterClientCache{
+			rwlock:    sync.Mutex{},
+			clientMap: make(map[string]*clusterCache),
+		},
+		knownClusterSet: make(sets.String),
+	}
+
 	tests := []struct {
-		cluster      federation.Cluster
-		expectAccept bool
-		name         string
+		cluster           v1alpha1.Cluster
+		expectAccept      bool
+		name              string
+		serviceController *ServiceController
 	}{
 		{
-			cluster:      federation.Cluster{},
-			expectAccept: false,
-			name:         "empty",
+			cluster:           v1alpha1.Cluster{},
+			expectAccept:      false,
+			name:              "empty",
+			serviceController: &serviceController,
 		},
 		{
-			cluster: federation.Cluster{
-				Status: federation.ClusterStatus{
-					Conditions: []federation.ClusterCondition{
-						{Type: federation.ClusterReady, Status: api.ConditionTrue},
+			cluster: v1alpha1.Cluster{
+				Status: v1alpha1.ClusterStatus{
+					Conditions: []v1alpha1.ClusterCondition{
+						{Type: v1alpha1.ClusterReady, Status: v1.ConditionTrue},
 					},
 				},
 			},
-			expectAccept: true,
-			name:         "basic",
+			expectAccept:      true,
+			name:              "basic",
+			serviceController: &serviceController,
 		},
 		{
-			cluster: federation.Cluster{
-				Status: federation.ClusterStatus{
-					Conditions: []federation.ClusterCondition{
-						{Type: federation.ClusterReady, Status: api.ConditionFalse},
+			cluster: v1alpha1.Cluster{
+				Status: v1alpha1.ClusterStatus{
+					Conditions: []v1alpha1.ClusterCondition{
+						{Type: v1alpha1.ClusterReady, Status: v1.ConditionFalse},
 					},
 				},
 			},
-			expectAccept: false,
-			name:         "notready",
+			expectAccept:      false,
+			name:              "notready",
+			serviceController: &serviceController,
 		},
 	}
 	pred := getClusterConditionPredicate()

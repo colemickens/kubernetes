@@ -19,17 +19,33 @@ package service
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/federation/pkg/dnsprovider/providers/google/clouddns" // Only for unit testing purposes.
+	v1 "k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/util/sets"
 )
 
-func buildEndpoint(subsets [][]string) *api.Endpoints {
-	endpoint := &api.Endpoints{
-		Subsets: []api.EndpointSubset{
-			{Addresses: []api.EndpointAddress{}},
+var fakeDns, _ = clouddns.NewFakeInterface() // No need to check for unsupported interfaces, as the fake interface supports everything that's required.
+var fakeDnsZones, _ = fakeDns.Zones()
+
+var fakeServiceController = ServiceController{
+	dns:          fakeDns,
+	dnsZones:     fakeDnsZones,
+	serviceCache: &serviceCache{fedServiceMap: make(map[string]*cachedService)},
+	clusterCache: &clusterClientCache{
+		clientMap: make(map[string]*clusterCache),
+	},
+	knownClusterSet: make(sets.String),
+}
+
+func buildEndpoint(subsets [][]string) *v1.Endpoints {
+	endpoint := &v1.Endpoints{
+		Subsets: []v1.EndpointSubset{
+			{Addresses: []v1.EndpointAddress{}},
 		},
 	}
 	for _, element := range subsets {
-		address := api.EndpointAddress{IP: element[0], Hostname: element[1], TargetRef: nil}
+		address := v1.EndpointAddress{IP: element[0], Hostname: element[1], TargetRef: nil}
 		endpoint.Subsets[0].Addresses = append(endpoint.Subsets[0].Addresses, address)
 	}
 	return endpoint
@@ -42,14 +58,14 @@ func TestProcessEndpointUpdate(t *testing.T) {
 	tests := []struct {
 		name          string
 		cachedService *cachedService
-		endpoint      *api.Endpoints
+		endpoint      *v1.Endpoints
 		clusterName   string
 		expectResult  int
 	}{
 		{
 			"no-cache",
 			&cachedService{
-				lastState:   &api.Service{},
+				lastState:   &v1.Service{},
 				endpointMap: make(map[string]int),
 			},
 			buildEndpoint([][]string{{"ip1", ""}}),
@@ -59,7 +75,7 @@ func TestProcessEndpointUpdate(t *testing.T) {
 		{
 			"has-cache",
 			&cachedService{
-				lastState: &api.Service{},
+				lastState: &v1.Service{},
 				endpointMap: map[string]int{
 					"foo": 1,
 				},
@@ -69,8 +85,9 @@ func TestProcessEndpointUpdate(t *testing.T) {
 			1,
 		},
 	}
+
 	for _, test := range tests {
-		cc.processEndpointUpdate(test.cachedService, test.endpoint, test.clusterName)
+		cc.processEndpointUpdate(test.cachedService, test.endpoint, test.clusterName, &fakeServiceController)
 		if test.expectResult != test.cachedService.endpointMap[test.clusterName] {
 			t.Errorf("Test failed for %s, expected %v, saw %v", test.name, test.expectResult, test.cachedService.endpointMap[test.clusterName])
 		}
@@ -78,41 +95,52 @@ func TestProcessEndpointUpdate(t *testing.T) {
 }
 
 func TestProcessEndpointDeletion(t *testing.T) {
+	clusterName := "foo"
 	cc := clusterClientCache{
-		clientMap: make(map[string]*clusterCache),
+		clientMap: map[string]*clusterCache{
+			clusterName: {
+				cluster: &v1alpha1.Cluster{
+					Status: v1alpha1.ClusterStatus{
+						Zones:  []string{"foozone"},
+						Region: "fooregion",
+					},
+				},
+			},
+		},
 	}
 	tests := []struct {
 		name          string
 		cachedService *cachedService
-		endpoint      *api.Endpoints
+		endpoint      *v1.Endpoints
 		clusterName   string
 		expectResult  int
 	}{
 		{
 			"no-cache",
 			&cachedService{
-				lastState:   &api.Service{},
+				lastState:   &v1.Service{},
 				endpointMap: make(map[string]int),
 			},
 			buildEndpoint([][]string{{"ip1", ""}}),
-			"foo",
+			clusterName,
 			0,
 		},
 		{
 			"has-cache",
 			&cachedService{
-				lastState: &api.Service{},
+				lastState: &v1.Service{},
 				endpointMap: map[string]int{
-					"foo": 1,
+					clusterName: 1,
 				},
 			},
 			buildEndpoint([][]string{{"ip1", ""}}),
-			"foo",
+			clusterName,
 			0,
 		},
 	}
+	fakeServiceController.clusterCache = &cc
 	for _, test := range tests {
-		cc.processEndpointDeletion(test.cachedService, test.clusterName)
+		cc.processEndpointDeletion(test.cachedService, test.clusterName, &fakeServiceController)
 		if test.expectResult != test.cachedService.endpointMap[test.clusterName] {
 			t.Errorf("Test failed for %s, expected %v, saw %v", test.name, test.expectResult, test.cachedService.endpointMap[test.clusterName])
 		}

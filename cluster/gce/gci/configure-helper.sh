@@ -24,16 +24,18 @@ set -o pipefail
 function config-ip-firewall {
   echo "Configuring IP firewall rules"
   # The GCI image has host firewall which drop most inbound/forwarded packets.
-  # We need to add rules to accept all TCP/UDP packets.
+  # We need to add rules to accept all TCP/UDP/ICMP packets.
   if iptables -L INPUT | grep "Chain INPUT (policy DROP)" > /dev/null; then
-    echo "Add rules to accept all inbound TCP/UDP packets"
+    echo "Add rules to accept all inbound TCP/UDP/ICMP packets"
     iptables -A INPUT -w -p TCP -j ACCEPT
     iptables -A INPUT -w -p UDP -j ACCEPT
+    iptables -A INPUT -w -p ICMP -j ACCEPT
   fi
   if iptables -L FORWARD | grep "Chain FORWARD (policy DROP)" > /dev/null; then
-    echo "Add rules to accept all forwarded TCP/UDP packets"
+    echo "Add rules to accept all forwarded TCP/UDP/ICMP packets"
     iptables -A FORWARD -w -p TCP -j ACCEPT
     iptables -A FORWARD -w -p UDP -j ACCEPT
+    iptables -A FORWARD -w -p ICMP -j ACCEPT
   fi
 }
 
@@ -44,6 +46,23 @@ function create-dirs {
   if [[ "${KUBERNETES_MASTER:-}" == "false" ]]; then
     mkdir -p /var/lib/kube-proxy
   fi
+}
+
+# Local ssds, if present, are mounted at /mnt/disks/ssdN.
+function ensure-local-ssds() {
+  for ssd in /dev/disk/by-id/google-local-ssd-*; do
+    if [ -e "${ssd}" ]; then
+      ssdnum=`echo ${ssd} | sed -e 's/\/dev\/disk\/by-id\/google-local-ssd-\([0-9]*\)/\1/'`
+      ssdmount="/mnt/disks/ssd${ssdnum}/"
+      echo "Formatting and mounting local SSD $ssd to ${ssdmount}"
+      mkdir -p ${ssdmount}
+      /usr/share/google/safe_format_and_mount -m "mkfs.ext4 -F" "${ssd}" ${ssdmount} || \
+      { echo "Local SSD $ssdnum mount failed"; return 1; }
+      chmod a+w ${ssdmount}
+    else
+      echo "No local SSD disks found."
+    fi
+  done
 }
 
 # Finds the master PD device; returns it in MASTER_PD_DEVICE
@@ -253,6 +272,13 @@ function assemble-docker-flags {
   if [[ "${TEST_CLUSTER:-}" == "true" ]]; then
     docker_opts+=" --debug"
   fi
+  # Decide whether to enable a docker registry mirror. This is taken from
+  # the "kube-env" metadata value.
+  if [[ -n "${DOCKER_REGISTRY_MIRROR_URL:-}" ]]; then
+    echo "Enable docker registry mirror at: ${DOCKER_REGISTRY_MIRROR_URL}"
+    docker_opts+=" --registry-mirror=${DOCKER_REGISTRY_MIRROR_URL}"
+  fi
+
   echo "DOCKER_OPTS=\"${docker_opts} ${EXTRA_DOCKER_OPTS:-}\"" > /etc/default/docker
 }
 
@@ -344,10 +370,18 @@ function start-kubelet {
   if [[ -n "${NODE_LABELS:-}" ]]; then
     flags+=" --node-labels=${NODE_LABELS}"
   fi
+  if [[ -n "${EVICTION_HARD:-}" ]]; then
+    flags+=" --eviction-hard=${EVICTION_HARD}"
+  fi
   if [[ "${ALLOCATE_NODE_CIDRS:-}" == "true" ]]; then
      flags+=" --configure-cbr0=${ALLOCATE_NODE_CIDRS}"
   fi
   echo "KUBELET_OPTS=\"${flags}\"" > /etc/default/kubelet
+
+  # Delete docker0 to avoid interference
+  iptables -t nat -F || true
+  ip link set docker0 down || true
+  brctl delbr docker0 || true
 
   systemctl start kubelet.service
 }
@@ -558,7 +592,6 @@ function start-kube-apiserver {
 function start-kube-controller-manager {
   echo "Start kubernetes controller-manager"
   prepare-log-file /var/log/kube-controller-manager.log
- 
   # Calculate variables and assemble the command line.
   local params="${CONTROLLER_MANAGER_TEST_LOG_LEVEL:-"--v=2"} ${CONTROLLER_MANAGER_TEST_ARGS:-}"
   params+=" --cloud-provider=gce"
@@ -616,6 +649,7 @@ function start-kube-scheduler {
   # Remove salt comments and replace variables with values.
   local -r src_file="${KUBE_HOME}/kube-manifests/kubernetes/gci-trusty/kube-scheduler.manifest"
   remove-salt-config-comments "${src_file}"
+
   sed -i -e "s@{{params}}@${params}@g" "${src_file}"
   sed -i -e "s@{{pillar\['kube_docker_registry'\]}}@${DOCKER_REGISTRY}@g" "${src_file}"
   sed -i -e "s@{{pillar\['kube-scheduler_docker_tag'\]}}@${kube_scheduler_docker_tag}@g" "${src_file}"
@@ -624,14 +658,24 @@ function start-kube-scheduler {
 
 # Starts cluster autoscaler.
 function start-cluster-autoscaler {
-  if [ "${ENABLE_NODE_AUTOSCALER:-}" = "true" ]; then
+  if [[ "${ENABLE_CLUSTER_AUTOSCALER:-}" == "true" ]]; then
+    echo "Start kubernetes cluster autoscaler"
+    prepare-log-file /var/log/cluster-autoscaler.log
+
     # Remove salt comments and replace variables with values
-    src_file="${KUBE_HOME}/kube-manifests/kubernetes/gci-trusty/cluster-autoscaler.manifest"
+    local -r src_file="${KUBE_HOME}/kube-manifests/kubernetes/gci-trusty/cluster-autoscaler.manifest"
     remove-salt-config-comments "${src_file}"
 
-    local params=`sed 's/^/"/;s/ /","/g;s/$/",/' <<< "${AUTOSCALER_MIG_CONFIG}"`
-    sed -i -e "s@\"{{param}}\",@${params}@g" "${src_file}"
+    local params="${AUTOSCALER_MIG_CONFIG}"
+    if [[ -n "${PROJECT_ID:-}" && -n "${TOKEN_URL:-}" && -n "${TOKEN_BODY:-}" && -n "${NODE_NETWORK:-}" ]]; then
+      params+=" --cloud-config=/etc/gce.conf"
+    fi
+
+    sed -i -e "s@{{params}}@${params}@g" "${src_file}"
+    sed -i -e "s@{{cloud_config_mount}}@${CLOUD_CONFIG_MOUNT}@g" "${src_file}"
+    sed -i -e "s@{{cloud_config_volume}}@${CLOUD_CONFIG_VOLUME}@g" "${src_file}"
     sed -i -e "s@{%.*%}@@g" "${src_file}"
+
     cp "${src_file}" /etc/kubernetes/manifests
   fi
 }
@@ -702,12 +746,6 @@ function start-kube-addons {
     sed -i -e "s@{{ *metrics_memory_per_node *}}@${metrics_memory_per_node}@g" "${controller_yaml}"
     sed -i -e "s@{{ *eventer_memory_per_node *}}@${eventer_memory_per_node}@g" "${controller_yaml}"
   fi
-  if [[ "${ENABLE_L7_LOADBALANCING:-}" == "glbc" ]]; then
-    setup-addon-manifests "addons" "cluster-loadbalancing/glbc"
-    local -r glbc_yaml="${dst_dir}/cluster-loadbalancing/glbc/glbc.yaml"
-    remove-salt-config-comments "${glbc_yaml}"
-    sed -i -e "s@{{ *kube_uid *}}@${KUBE_UID:-}@g" "${glbc_yaml}"
-  fi
   if [[ "${ENABLE_CLUSTER_DNS:-}" == "true" ]]; then
     setup-addon-manifests "addons" "dns"
     local -r dns_rc_file="${dst_dir}/dns/skydns-rc.yaml"
@@ -739,6 +777,13 @@ function start-kube-addons {
   if [[ "${ENABLE_CLUSTER_UI:-}" == "true" ]]; then
     setup-addon-manifests "addons" "dashboard"
   fi
+  if [[ "${ENABLE_NODE_PROBLEM_DETECTOR:-}" == "true" ]]; then
+    setup-addon-manifests "addons" "node-problem-detector"
+    local -r node_problem_detector_file="${dst_dir}/node-problem-detector/node-problem-detector.yaml"
+    mv "${dst_dir}/node-problem-detector/node-problem-detector.yaml.in" "${node_problem_detector_file}"
+    # Replace the salt configurations with variable values.
+    sed -i -e "s@{{ *pillar\['master_node'\] *}}@${MASTER_NAME}@g" "${node_problem_detector_file}"
+  fi
   if echo "${ADMISSION_CONTROL:-}" | grep -q "LimitRanger"; then
     setup-addon-manifests "admission-controls" "limit-range"
   fi
@@ -753,11 +798,25 @@ function start-fluentd {
   if [[ "${ENABLE_NODE_LOGGING:-}" == "true" ]]; then
     if [[ "${LOGGING_DESTINATION:-}" == "gcp" ]]; then
       cp "${KUBE_HOME}/kube-manifests/kubernetes/fluentd-gcp.yaml" /etc/kubernetes/manifests/
-    elif [[ "${LOGGING_DESTINATION:-}" == "elasticsearch" ]]; then
+    elif [[ "${LOGGING_DESTINATION:-}" == "elasticsearch" && "${KUBERNETES_MASTER:-}" != "true" ]]; then
+      # Running fluentd-es on the master is pointless, as it can't communicate
+      # with elasticsearch from there in the default configuration.
       cp "${KUBE_HOME}/kube-manifests/kubernetes/fluentd-es.yaml" /etc/kubernetes/manifests/
     fi
   fi
 }
+
+# Starts a l7 loadbalancing controller for ingress.
+function start-lb-controller {
+  if [[ "${ENABLE_L7_LOADBALANCING:-}" == "glbc" ]]; then
+    echo "Starting GCE L7 pod"
+    prepare-log-file /var/log/glbc.log
+    setup-addon-manifests "addons" "cluster-loadbalancing/glbc"
+    cp "${KUBE_HOME}/kube-manifests/kubernetes/gci-trusty/glbc.manifest" \
+       /etc/kubernetes/manifests/
+  fi
+}
+
 
 function reset-motd {
   # kubelet is installed both on the master and nodes, and the version is easy to parse (unlike kubectl)
@@ -806,6 +865,7 @@ fi
 source "${KUBE_HOME}/kube-env"
 config-ip-firewall
 create-dirs
+ensure-local-ssds
 if [[ "${KUBERNETES_MASTER:-}" == "true" ]]; then
   mount-master-pd
   create-master-auth
@@ -827,6 +887,7 @@ if [[ "${KUBERNETES_MASTER:-}" == "true" ]]; then
   start-kube-scheduler
   start-kube-addons
   start-cluster-autoscaler
+  start-lb-controller
 else
   start-kube-proxy
   # Kube-registry-proxy.

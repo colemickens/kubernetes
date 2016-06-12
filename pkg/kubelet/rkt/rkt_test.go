@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ import (
 	kubetesting "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/network"
+	"k8s.io/kubernetes/pkg/kubelet/network/kubenet"
 	"k8s.io/kubernetes/pkg/kubelet/network/mock_network"
 	"k8s.io/kubernetes/pkg/kubelet/rkt/mock_os"
 	"k8s.io/kubernetes/pkg/kubelet/types"
@@ -74,7 +76,7 @@ func makeRktPod(rktPodState rktapi.PodState,
 	rktPodID, podUID, podName, podNamespace string, podCreatedAt, podStartedAt int64,
 	podRestartCount string, appNames, imgIDs, imgNames,
 	containerHashes []string, appStates []rktapi.AppState,
-	exitcodes []int32) *rktapi.Pod {
+	exitcodes []int32, ips map[string]string) *rktapi.Pod {
 
 	podManifest := &appcschema.PodManifest{
 		ACKind:    appcschema.PodManifestKind,
@@ -148,6 +150,11 @@ func makeRktPod(rktPodState rktapi.PodState,
 		})
 	}
 
+	var networks []*rktapi.Network
+	for name, ip := range ips {
+		networks = append(networks, &rktapi.Network{Name: name, Ipv4: ip})
+	}
+
 	return &rktapi.Pod{
 		Id:        rktPodID,
 		State:     rktPodState,
@@ -155,6 +162,7 @@ func makeRktPod(rktPodState rktapi.PodState,
 		Manifest:  mustMarshalPodManifest(podManifest),
 		StartedAt: podStartedAt,
 		CreatedAt: podCreatedAt,
+		Networks:  networks,
 	}
 }
 
@@ -172,7 +180,6 @@ func TestCheckVersion(t *testing.T) {
 	tests := []struct {
 		minimumRktBinVersion     string
 		recommendedRktBinVersion string
-		minimumAppcVersion       string
 		minimumRktApiVersion     string
 		minimumSystemdVersion    string
 		err                      error
@@ -183,7 +190,6 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.3",
 			"1.2.3",
-			"1.2.4",
 			"1.2.5",
 			"99",
 			nil,
@@ -194,7 +200,6 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.3+git",
 			"1.2.3+git",
-			"1.2.4+git",
 			"1.2.6-alpha",
 			"100",
 			nil,
@@ -205,21 +210,9 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.4",
 			"1.2.4",
-			"1.2.4",
 			"1.2.6-alpha",
 			"100",
 			fmt.Errorf("rkt: binary version is too old(%v), requires at least %v", fr.info.RktVersion, "1.2.4"),
-			true,
-			true,
-		},
-		// Requires greater Appc version.
-		{
-			"1.2.3",
-			"1.2.3",
-			"1.2.5",
-			"1.2.6-alpha",
-			"100",
-			fmt.Errorf("rkt: appc version is too old(%v), requires at least %v", fr.info.AppcVersion, "1.2.5"),
 			true,
 			true,
 		},
@@ -227,7 +220,6 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.3",
 			"1.2.3",
-			"1.2.4",
 			"1.2.6",
 			"100",
 			fmt.Errorf("rkt: API version is too old(%v), requires at least %v", fr.info.ApiVersion, "1.2.6"),
@@ -238,7 +230,6 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.3",
 			"1.2.3",
-			"1.2.4",
 			"1.2.7",
 			"100",
 			fmt.Errorf("rkt: API version is too old(%v), requires at least %v", fr.info.ApiVersion, "1.2.7"),
@@ -249,7 +240,6 @@ func TestCheckVersion(t *testing.T) {
 		{
 			"1.2.3",
 			"1.2.3",
-			"1.2.4",
 			"1.2.7",
 			"101",
 			fmt.Errorf("rkt: systemd version(%v) is too old, requires at least %v", fs.version, "101"),
@@ -260,7 +250,7 @@ func TestCheckVersion(t *testing.T) {
 
 	for i, tt := range tests {
 		testCaseHint := fmt.Sprintf("test case #%d", i)
-		err := r.checkVersion(tt.minimumRktBinVersion, tt.recommendedRktBinVersion, tt.minimumAppcVersion, tt.minimumRktApiVersion, tt.minimumSystemdVersion)
+		err := r.checkVersion(tt.minimumRktBinVersion, tt.recommendedRktBinVersion, tt.minimumRktApiVersion, tt.minimumSystemdVersion)
 		assert.Equal(t, tt.err, err, testCaseHint)
 
 		if tt.calledGetInfo {
@@ -271,7 +261,6 @@ func TestCheckVersion(t *testing.T) {
 		}
 		if err == nil {
 			assert.Equal(t, fr.info.RktVersion, r.versions.binVersion.String(), testCaseHint)
-			assert.Equal(t, fr.info.AppcVersion, r.versions.appcVersion.String(), testCaseHint)
 			assert.Equal(t, fr.info.ApiVersion, r.versions.apiVersion.String(), testCaseHint)
 		}
 		fr.CleanCalls()
@@ -375,6 +364,7 @@ func TestGetPods(t *testing.T) {
 					[]string{"1001", "1002"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 0},
+					nil,
 				),
 			},
 			[]*kubecontainer.Pod{
@@ -413,6 +403,7 @@ func TestGetPods(t *testing.T) {
 					[]string{"1001", "1002"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 0},
+					nil,
 				),
 				makeRktPod(rktapi.PodState_POD_STATE_EXITED,
 					"uuid-4003", "43", "guestbook", "default",
@@ -423,6 +414,7 @@ func TestGetPods(t *testing.T) {
 					[]string{"10011", "10022"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_EXITED, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 0},
+					nil,
 				),
 				makeRktPod(rktapi.PodState_POD_STATE_EXITED,
 					"uuid-4004", "43", "guestbook", "default",
@@ -433,6 +425,7 @@ func TestGetPods(t *testing.T) {
 					[]string{"10011", "10022"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_RUNNING},
 					[]int32{0, 0},
+					nil,
 				),
 			},
 			[]*kubecontainer.Pod{
@@ -578,16 +571,19 @@ func TestGetPodStatus(t *testing.T) {
 	}
 
 	tests := []struct {
-		pods   []*rktapi.Pod
-		result *kubecontainer.PodStatus
+		networkPluginName string
+		pods              []*rktapi.Pod
+		result            *kubecontainer.PodStatus
 	}{
-		// No pods.
+		// # case 0, No pods.
 		{
+			kubenet.KubenetPluginName,
 			nil,
 			&kubecontainer.PodStatus{ID: "42", Name: "guestbook", Namespace: "default"},
 		},
-		// One pod.
+		// # case 1, One pod.
 		{
+			kubenet.KubenetPluginName,
 			[]*rktapi.Pod{
 				makeRktPod(rktapi.PodState_POD_STATE_RUNNING,
 					"uuid-4002", "42", "guestbook", "default",
@@ -598,6 +594,7 @@ func TestGetPodStatus(t *testing.T) {
 					[]string{"1001", "1002"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 0},
+					nil,
 				),
 			},
 			&kubecontainer.PodStatus{
@@ -634,8 +631,59 @@ func TestGetPodStatus(t *testing.T) {
 				},
 			},
 		},
-		// Multiple pods.
+		// # case 2, One pod with no-op network plugin name.
 		{
+			network.DefaultPluginName,
+			[]*rktapi.Pod{
+				makeRktPod(rktapi.PodState_POD_STATE_RUNNING,
+					"uuid-4002", "42", "guestbook", "default",
+					ns(10), ns(20), "7",
+					[]string{"app-1", "app-2"},
+					[]string{"img-id-1", "img-id-2"},
+					[]string{"img-name-1", "img-name-2"},
+					[]string{"1001", "1002"},
+					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
+					[]int32{0, 0},
+					map[string]string{defaultNetworkName: "10.10.10.22"},
+				),
+			},
+			&kubecontainer.PodStatus{
+				ID:        "42",
+				Name:      "guestbook",
+				Namespace: "default",
+				IP:        "10.10.10.22",
+				ContainerStatuses: []*kubecontainer.ContainerStatus{
+					{
+						ID:           kubecontainer.BuildContainerID("rkt", "uuid-4002:app-1"),
+						Name:         "app-1",
+						State:        kubecontainer.ContainerStateRunning,
+						CreatedAt:    time.Unix(10, 0),
+						StartedAt:    time.Unix(20, 0),
+						FinishedAt:   time.Unix(0, 30),
+						Image:        "img-name-1:latest",
+						ImageID:      "rkt://img-id-1",
+						Hash:         1001,
+						RestartCount: 7,
+					},
+					{
+						ID:           kubecontainer.BuildContainerID("rkt", "uuid-4002:app-2"),
+						Name:         "app-2",
+						State:        kubecontainer.ContainerStateExited,
+						CreatedAt:    time.Unix(10, 0),
+						StartedAt:    time.Unix(20, 0),
+						FinishedAt:   time.Unix(0, 30),
+						Image:        "img-name-2:latest",
+						ImageID:      "rkt://img-id-2",
+						Hash:         1002,
+						RestartCount: 7,
+						Reason:       "Completed",
+					},
+				},
+			},
+		},
+		// # case 3, Multiple pods.
+		{
+			kubenet.KubenetPluginName,
 			[]*rktapi.Pod{
 				makeRktPod(rktapi.PodState_POD_STATE_EXITED,
 					"uuid-4002", "42", "guestbook", "default",
@@ -646,6 +694,7 @@ func TestGetPodStatus(t *testing.T) {
 					[]string{"1001", "1002"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 0},
+					nil,
 				),
 				makeRktPod(rktapi.PodState_POD_STATE_RUNNING, // The latest pod is running.
 					"uuid-4003", "42", "guestbook", "default",
@@ -656,6 +705,7 @@ func TestGetPodStatus(t *testing.T) {
 					[]string{"1001", "1002"},
 					[]rktapi.AppState{rktapi.AppState_APP_STATE_RUNNING, rktapi.AppState_APP_STATE_EXITED},
 					[]int32{0, 1},
+					nil,
 				),
 			},
 			&kubecontainer.PodStatus{
@@ -739,13 +789,16 @@ func TestGetPodStatus(t *testing.T) {
 			mockFI.EXPECT().ModTime().Return(podTime)
 			return mockFI, nil
 		}
+		fnp.EXPECT().Name().Return(tt.networkPluginName)
 
-		if tt.result.IP != "" {
-			fnp.EXPECT().GetPodNetworkStatus("default", "guestbook", kubecontainer.ContainerID{ID: "42"}).
-				Return(&network.PodNetworkStatus{IP: net.ParseIP(tt.result.IP)}, nil)
-		} else {
-			fnp.EXPECT().GetPodNetworkStatus("default", "guestbook", kubecontainer.ContainerID{ID: "42"}).
-				Return(nil, fmt.Errorf("no such network"))
+		if tt.networkPluginName == kubenet.KubenetPluginName {
+			if tt.result.IP != "" {
+				fnp.EXPECT().GetPodNetworkStatus("default", "guestbook", kubecontainer.ContainerID{ID: "42"}).
+					Return(&network.PodNetworkStatus{IP: net.ParseIP(tt.result.IP)}, nil)
+			} else {
+				fnp.EXPECT().GetPodNetworkStatus("default", "guestbook", kubecontainer.ContainerID{ID: "42"}).
+					Return(nil, fmt.Errorf("no such network"))
+			}
 		}
 
 		status, err := r.GetPodStatus("42", "guestbook", "default")
@@ -793,6 +846,8 @@ func generateMemoryIsolator(t *testing.T, request, limit string) appctypes.Isola
 
 func baseApp(t *testing.T) *appctypes.App {
 	return &appctypes.App{
+		User:              "0",
+		Group:             "0",
 		Exec:              appctypes.Exec{"/bin/foo", "bar"},
 		SupplementaryGIDs: []int{4, 5, 6},
 		WorkingDirectory:  "/foo",
@@ -1088,9 +1143,10 @@ func TestSetApp(t *testing.T) {
 func TestGenerateRunCommand(t *testing.T) {
 	hostName := "test-hostname"
 	tests := []struct {
-		pod       *api.Pod
-		uuid      string
-		netnsName string
+		networkPlugin network.NetworkPlugin
+		pod           *api.Pod
+		uuid          string
+		netnsName     string
 
 		dnsServers  []string
 		dnsSearches []string
@@ -1101,6 +1157,7 @@ func TestGenerateRunCommand(t *testing.T) {
 	}{
 		// Case #0, returns error.
 		{
+			kubenet.NewPlugin("/tmp"),
 			&api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Name: "pod-name-foo",
@@ -1117,6 +1174,7 @@ func TestGenerateRunCommand(t *testing.T) {
 		},
 		// Case #1, returns no dns, with private-net.
 		{
+			kubenet.NewPlugin("/tmp"),
 			&api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Name: "pod-name-foo",
@@ -1128,10 +1186,11 @@ func TestGenerateRunCommand(t *testing.T) {
 			[]string{},
 			"pod-hostname-foo",
 			nil,
-			" --net=\"/var/run/netns/default\" -- /bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=host --hostname=pod-hostname-foo rkt-uuid-foo",
+			"/usr/bin/nsenter --net=/var/run/netns/default -- /bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=host --hostname=pod-hostname-foo rkt-uuid-foo",
 		},
 		// Case #2, returns no dns, with host-net.
 		{
+			kubenet.NewPlugin("/tmp"),
 			&api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Name: "pod-name-foo",
@@ -1152,6 +1211,7 @@ func TestGenerateRunCommand(t *testing.T) {
 		},
 		// Case #3, returns dns, dns searches, with private-net.
 		{
+			kubenet.NewPlugin("/tmp"),
 			&api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Name: "pod-name-foo",
@@ -1168,10 +1228,11 @@ func TestGenerateRunCommand(t *testing.T) {
 			[]string{"."},
 			"pod-hostname-foo",
 			nil,
-			" --net=\"/var/run/netns/default\" -- /bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=host --dns=127.0.0.1 --dns-search=. --dns-opt=ndots:5 --hostname=pod-hostname-foo rkt-uuid-foo",
+			"/usr/bin/nsenter --net=/var/run/netns/default -- /bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=host --dns=127.0.0.1 --dns-search=. --dns-opt=ndots:5 --hostname=pod-hostname-foo rkt-uuid-foo",
 		},
 		// Case #4, returns no dns, dns searches, with host-network.
 		{
+			kubenet.NewPlugin("/tmp"),
 			&api.Pod{
 				ObjectMeta: api.ObjectMeta{
 					Name: "pod-name-foo",
@@ -1190,10 +1251,28 @@ func TestGenerateRunCommand(t *testing.T) {
 			nil,
 			fmt.Sprintf("/bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=host --hostname=%s rkt-uuid-foo", hostName),
 		},
+		// Case #5, with no-op plugin, returns --net=rkt.kubernetes.io, with dns and dns search.
+		{
+			&network.NoopNetworkPlugin{},
+			&api.Pod{
+				ObjectMeta: api.ObjectMeta{
+					Name: "pod-name-foo",
+				},
+				Spec: api.PodSpec{},
+			},
+			"rkt-uuid-foo",
+			"default",
+			[]string{"127.0.0.1"},
+			[]string{"."},
+			"pod-hostname-foo",
+			nil,
+			"/bin/rkt/rkt --insecure-options=image,ondisk --local-config=/var/rkt/local/data --dir=/var/data run-prepared --net=rkt.kubernetes.io --dns=127.0.0.1 --dns-search=. --dns-opt=ndots:5 --hostname=pod-hostname-foo rkt-uuid-foo",
+		},
 	}
 
 	rkt := &Runtime{
-		os: &kubetesting.FakeOS{HostName: hostName},
+		nsenterPath: "/usr/bin/nsenter",
+		os:          &kubetesting.FakeOS{HostName: hostName},
 		config: &Config{
 			Path:            "/bin/rkt/rkt",
 			Stage1Image:     "/bin/rkt/stage1-coreos.aci",
@@ -1205,6 +1284,7 @@ func TestGenerateRunCommand(t *testing.T) {
 
 	for i, tt := range tests {
 		testCaseHint := fmt.Sprintf("test case #%d", i)
+		rkt.networkPlugin = tt.networkPlugin
 		rkt.runtimeHelper = &fakeRuntimeHelper{tt.dnsServers, tt.dnsSearches, tt.hostName, "", tt.err}
 		rkt.execer = &utilexec.FakeExec{CommandScript: []utilexec.FakeCommandAction{func(cmd string, args ...string) utilexec.Cmd {
 			return utilexec.InitFakeCmd(&utilexec.FakeCmd{}, cmd, args...)
@@ -1624,13 +1704,20 @@ func TestGarbageCollect(t *testing.T) {
 
 		sort.Sort(sortedStringList(tt.expectedServiceFiles))
 		sort.Sort(sortedStringList(fakeOS.Removes))
+		sort.Sort(sortedStringList(fs.resetFailedUnits))
 
 		assert.Equal(t, tt.expectedServiceFiles, fakeOS.Removes, testCaseHint)
+		var expectedService []string
+		for _, f := range tt.expectedServiceFiles {
+			expectedService = append(expectedService, filepath.Base(f))
+		}
+		assert.Equal(t, expectedService, fs.resetFailedUnits, testCaseHint)
 
 		// Cleanup after each test.
 		cli.Reset()
 		ctrl.Finish()
 		fakeOS.Removes = []string{}
+		fs.resetFailedUnits = []string{}
 		getter.pods = make(map[kubetypes.UID]*api.Pod)
 	}
 }

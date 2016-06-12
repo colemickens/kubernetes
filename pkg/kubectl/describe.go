@@ -540,6 +540,7 @@ func describePod(pod *api.Pod, events *api.EventList) (string, error) {
 			}
 		}
 		describeVolumes(pod.Spec.Volumes, out, "")
+		fmt.Fprintf(out, "QoS Tier:\t%s\n", qosutil.GetPodQos(pod))
 		if events != nil {
 			DescribeEvents(events, out)
 		}
@@ -841,15 +842,6 @@ func describeContainers(label string, containers []api.Container, containerStatu
 			for _, arg := range container.Args {
 				fmt.Fprintf(out, "      %s\n", arg)
 			}
-		}
-
-		resourceToQoS := qosutil.GetQoS(&container)
-		if len(resourceToQoS) > 0 {
-			fmt.Fprintf(out, "    QoS Tier:\n")
-		}
-		for _, resource := range SortedQoSResourceNames(resourceToQoS) {
-			qos := resourceToQoS[resource]
-			fmt.Fprintf(out, "      %s:\t%s\n", resource, qos)
 		}
 
 		resources := container.Resources
@@ -1302,7 +1294,7 @@ func (i *IngressDescriber) describeIngress(ing *extensions.Ingress, describerSet
 	return tabbedString(func(out io.Writer) error {
 		fmt.Fprintf(out, "Name:\t%v\n", ing.Name)
 		fmt.Fprintf(out, "Namespace:\t%v\n", ing.Namespace)
-		fmt.Fprintf(out, "Address:\t%v\n", loadBalancerStatusStringer(ing.Status.LoadBalancer))
+		fmt.Fprintf(out, "Address:\t%v\n", loadBalancerStatusStringer(ing.Status.LoadBalancer, true))
 		def := ing.Spec.Backend
 		ns := ing.Namespace
 		if def == nil {
@@ -1320,14 +1312,23 @@ func (i *IngressDescriber) describeIngress(ing *extensions.Ingress, describerSet
 		}
 		fmt.Fprint(out, "Rules:\n  Host\tPath\tBackends\n")
 		fmt.Fprint(out, "  ----\t----\t--------\n")
+		count := 0
 		for _, rules := range ing.Spec.Rules {
 			if rules.HTTP == nil {
 				continue
 			}
-			fmt.Fprintf(out, "  %s\t\n", rules.Host)
-			for _, path := range rules.HTTP.Paths {
-				fmt.Fprintf(out, "    \t%s \t%s (%s)\n", path.Path, backendStringer(&path.Backend), i.describeBackend(ing.Namespace, &path.Backend))
+			count++
+			host := rules.Host
+			if len(host) == 0 {
+				host = "*"
 			}
+			fmt.Fprintf(out, "  %s\t\n", host)
+			for _, path := range rules.HTTP.Paths {
+				fmt.Fprintf(out, "    \t%s \t%s (%s)\n", path.Path, backendStringer(&path.Backend), i.describeBackend(ns, &path.Backend))
+			}
+		}
+		if count == 0 {
+			fmt.Fprintf(out, "  %s\t%s \t%s (%s)\n", "*", "*", backendStringer(def), i.describeBackend(ns, def))
 		}
 		describeIngressAnnotations(out, ing.Annotations)
 
@@ -1922,12 +1923,9 @@ func (dd *DeploymentDescriber) Describe(namespace, name string, describerSetting
 			ru := d.Spec.Strategy.RollingUpdate
 			fmt.Fprintf(out, "RollingUpdateStrategy:\t%s max unavailable, %s max surge\n", ru.MaxUnavailable.String(), ru.MaxSurge.String())
 		}
-		oldRSs, _, err := deploymentutil.GetOldReplicaSets(d, dd)
+		oldRSs, _, newRS, err := deploymentutil.GetAllReplicaSets(d, dd)
 		if err == nil {
 			fmt.Fprintf(out, "OldReplicaSets:\t%s\n", printReplicaSetsByLabels(oldRSs))
-		}
-		newRS, err := deploymentutil.GetNewReplicaSet(d, dd)
-		if err == nil {
 			var newRSs []*extensions.ReplicaSet
 			if newRS != nil {
 				newRSs = append(newRSs, newRS)

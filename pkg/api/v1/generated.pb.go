@@ -4159,6 +4159,21 @@ func (m *NodeStatus) MarshalTo(data []byte) (int, error) {
 			i += n
 		}
 	}
+	if len(m.VolumesInUse) > 0 {
+		for _, s := range m.VolumesInUse {
+			data[i] = 0x4a
+			i++
+			l = len(s)
+			for l >= 1<<7 {
+				data[i] = uint8(uint64(l)&0x7f | 0x80)
+				l >>= 7
+				i++
+			}
+			data[i] = uint8(l)
+			i++
+			i += copy(data[i:], s)
+		}
+	}
 	return i, nil
 }
 
@@ -4452,6 +4467,16 @@ func (m *OwnerReference) MarshalTo(data []byte) (int, error) {
 	i++
 	i = encodeVarintGenerated(data, i, uint64(len(m.APIVersion)))
 	i += copy(data[i:], m.APIVersion)
+	if m.Controller != nil {
+		data[i] = 0x30
+		i++
+		if *m.Controller {
+			data[i] = 1
+		} else {
+			data[i] = 0
+		}
+		i++
+	}
 	return i, nil
 }
 
@@ -8856,6 +8881,12 @@ func (m *NodeStatus) Size() (n int) {
 			n += 1 + l + sovGenerated(uint64(l))
 		}
 	}
+	if len(m.VolumesInUse) > 0 {
+		for _, s := range m.VolumesInUse {
+			l = len(s)
+			n += 1 + l + sovGenerated(uint64(l))
+		}
+	}
 	return n
 }
 
@@ -8982,6 +9013,9 @@ func (m *OwnerReference) Size() (n int) {
 	n += 1 + l + sovGenerated(uint64(l))
 	l = len(m.APIVersion)
 	n += 1 + l + sovGenerated(uint64(l))
+	if m.Controller != nil {
+		n += 2
+	}
 	return n
 }
 
@@ -21572,6 +21606,35 @@ func (m *NodeStatus) Unmarshal(data []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 9:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field VolumesInUse", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[iNdEx]
+				iNdEx++
+				stringLen |= (uint64(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthGenerated
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.VolumesInUse = append(m.VolumesInUse, UniqueDeviceName(data[iNdEx:postIndex]))
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skipGenerated(data[iNdEx:])
@@ -23047,6 +23110,27 @@ func (m *OwnerReference) Unmarshal(data []byte) error {
 			}
 			m.APIVersion = string(data[iNdEx:postIndex])
 			iNdEx = postIndex
+		case 6:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Controller", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowGenerated
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := data[iNdEx]
+				iNdEx++
+				v |= (int(b) & 0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.Controller = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := skipGenerated(data[iNdEx:])

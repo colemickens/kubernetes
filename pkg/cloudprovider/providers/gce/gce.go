@@ -100,6 +100,31 @@ type Config struct {
 	}
 }
 
+// Disks is interface for manipulation with GCE PDs.
+type Disks interface {
+	// AttachDisk attaches given disk to given instance. Current instance
+	// is used when instanceID is empty string.
+	AttachDisk(diskName, instanceID string, readOnly bool) error
+
+	// DetachDisk detaches given disk to given instance. Current instance
+	// is used when instanceID is empty string.
+	DetachDisk(devicePath, instanceID string) error
+
+	// DiskIsAttached checks if a disk is attached to the given node.
+	DiskIsAttached(diskName, instanceID string) (bool, error)
+
+	// CreateDisk creates a new PD with given properties. Tags are serialized
+	// as JSON into Description field.
+	CreateDisk(name string, zone string, sizeGb int64, tags map[string]string) error
+
+	// DeleteDisk deletes PD.
+	DeleteDisk(diskToDelete string) error
+
+	// GetAutoLabelsForPD returns labels to apply to PeristentVolume
+	// representing this PD, namely failure domain and zone.
+	GetAutoLabelsForPD(name string) (map[string]string, error)
+}
+
 type instRefSlice []*compute.InstanceReference
 
 func (p instRefSlice) Len() int      { return len(p) }
@@ -454,7 +479,7 @@ func (gce *GCECloud) waitForZoneOp(op *compute.Operation, zone string) error {
 }
 
 // GetLoadBalancer is an implementation of LoadBalancer.GetLoadBalancer
-func (gce *GCECloud) GetLoadBalancer(service *api.Service) (*api.LoadBalancerStatus, bool, error) {
+func (gce *GCECloud) GetLoadBalancer(clusterName string, service *api.Service) (*api.LoadBalancerStatus, bool, error) {
 	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
 	fwd, err := gce.service.ForwardingRules.Get(gce.projectID, gce.region, loadBalancerName).Do()
 	if err == nil {
@@ -481,7 +506,7 @@ func isHTTPErrorCode(err error, code int) bool {
 // Due to an interesting series of design decisions, this handles both creating
 // new load balancers and updating existing load balancers, recognizing when
 // each is needed.
-func (gce *GCECloud) EnsureLoadBalancer(apiService *api.Service, hostNames []string) (*api.LoadBalancerStatus, error) {
+func (gce *GCECloud) EnsureLoadBalancer(clusterName string, apiService *api.Service, hostNames []string) (*api.LoadBalancerStatus, error) {
 	if len(hostNames) == 0 {
 		return nil, fmt.Errorf("Cannot EnsureLoadBalancer() with no hosts")
 	}
@@ -1133,7 +1158,7 @@ func computeUpdate(tp *compute.TargetPool, instances []*gceInstance, max int) ([
 }
 
 // UpdateLoadBalancer is an implementation of LoadBalancer.UpdateLoadBalancer.
-func (gce *GCECloud) UpdateLoadBalancer(service *api.Service, hostNames []string) error {
+func (gce *GCECloud) UpdateLoadBalancer(clusterName string, service *api.Service, hostNames []string) error {
 	hosts, err := gce.getInstancesByNames(hostNames)
 	if err != nil {
 		return err
@@ -1188,7 +1213,7 @@ func (gce *GCECloud) UpdateLoadBalancer(service *api.Service, hostNames []string
 }
 
 // EnsureLoadBalancerDeleted is an implementation of LoadBalancer.EnsureLoadBalancerDeleted.
-func (gce *GCECloud) EnsureLoadBalancerDeleted(service *api.Service) error {
+func (gce *GCECloud) EnsureLoadBalancerDeleted(clusterName string, service *api.Service) error {
 	loadBalancerName := cloudprovider.GetLoadBalancerName(service)
 	glog.V(2).Infof("EnsureLoadBalancerDeleted(%v, %v, %v, %v)", service.Namespace, service.Name, loadBalancerName,
 		gce.region)

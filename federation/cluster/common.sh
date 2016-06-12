@@ -32,6 +32,7 @@ KUBE_ARCH=${KUBE_ARCH:-amd64}
 KUBE_BUILD_STAGE=${KUBE_BUILD_STAGE:-release-stage}
 
 source "${KUBE_ROOT}/cluster/common.sh"
+source "${KUBE_ROOT}/hack/lib/util.sh"
 
 host_kubectl="${KUBE_ROOT}/cluster/kubectl.sh --namespace=${FEDERATION_NAMESPACE}"
 
@@ -40,12 +41,30 @@ host_kubectl="${KUBE_ROOT}/cluster/kubectl.sh --namespace=${FEDERATION_NAMESPACE
 
 # Optional
 # FEDERATION_IMAGE_TAG: reference and pull all federated images with this tag. Used for ci testing
-function create-federated-api-objects {
+function create-federation-api-objects {
 (
     : "${FEDERATION_PUSH_REPO_BASE?Must set FEDERATION_PUSH_REPO_BASE env var}"
     export FEDERATION_APISERVER_DEPLOYMENT_NAME="federation-apiserver"
     export FEDERATION_APISERVER_IMAGE_REPO="${FEDERATION_PUSH_REPO_BASE}/federation-apiserver"
     export FEDERATION_APISERVER_IMAGE_TAG="${FEDERATION_IMAGE_TAG:-$(cat ${KUBE_ROOT}/_output/${KUBE_BUILD_STAGE}/server/${KUBE_PLATFORM}-${KUBE_ARCH}/kubernetes/server/bin/federation-apiserver.docker_tag)}"
+
+    export FEDERATION_CONTROLLER_MANAGER_DEPLOYMENT_NAME="federation-controller-manager"
+    export FEDERATION_CONTROLLER_MANAGER_IMAGE_REPO="${FEDERATION_PUSH_REPO_BASE}/federation-controller-manager"
+    export FEDERATION_CONTROLLER_MANAGER_IMAGE_TAG="${FEDERATION_IMAGE_TAG:-$(cat ${KUBE_ROOT}/_output/${KUBE_BUILD_STAGE}/server/${KUBE_PLATFORM}-${KUBE_ARCH}/kubernetes/server/bin/federation-controller-manager.docker_tag)}"
+
+    if [[ -z "${FEDERATION_DNS_PROVIDER:-}" ]]; then
+      # Set the appropriate value based on cloud provider.
+      if [[ "$KUBERNETES_PROVIDER" == "gce" || "${KUBERNETES_PROVIDER}" == "gke" ]]; then
+        echo "setting dns provider to google-clouddns"
+        export FEDERATION_DNS_PROVIDER="google-clouddns"
+      elif [[ "${KUBERNETES_PROVIDER}" == "aws" ]]; then
+        echo "setting dns provider to aws-route53"
+        export FEDERATION_DNS_PROVIDER="aws-route53"
+      else
+        echo "Must set FEDERATION_DNS_PROVIDER env var"
+        exit 1
+      fi
+    fi
 
     export FEDERATION_SERVICE_CIDR=${FEDERATION_SERVICE_CIDR:-"10.10.0.0/24"}
 
@@ -64,7 +83,7 @@ function create-federated-api-objects {
 
     $template "${manifests_root}/federation-ns.yaml" | $host_kubectl apply -f -
 
-    cleanup-federated-api-objects
+    cleanup-federation-api-objects
 
     export FEDERATION_API_HOST=""
     export KUBE_MASTER_IP=""
@@ -104,6 +123,34 @@ function create-federated-api-objects {
     export FEDERATION_API_KNOWN_TOKENS="${FEDERATION_API_TOKEN},admin,admin"
 
     $template "${manifests_root}/federation-apiserver-"{deployment,secrets}".yaml" | $host_kubectl create -f -
+    $template "${manifests_root}/federation-controller-manager-deployment.yaml" | $host_kubectl create -f -
+
+    # Create a kubeconfig with credentails for federation-apiserver. We will
+    # then use this kubeconfig to create a secret which the federation
+    # controller manager can use to talk to the federation-apiserver.
+    # Note that the file name should be "kubeconfig" so that the secret key gets the same name.
+    KUBECONFIG_DIR=$(dirname ${KUBECONFIG:-$DEFAULT_KUBECONFIG})
+    CONTEXT=federated-cluster \
+	   KUBE_BEARER_TOKEN="$FEDERATION_API_TOKEN" \
+           KUBECONFIG="${KUBECONFIG_DIR}/federation/federation-apiserver/kubeconfig" \
+	   create-kubeconfig
+
+    # Create secret with federation-apiserver's kubeconfig
+    $host_kubectl create secret generic federation-apiserver-secret --from-file="${KUBECONFIG_DIR}/federation/federation-apiserver/kubeconfig" --namespace="${FEDERATION_NAMESPACE}"
+
+    # Create secrets with all the kubernetes-apiserver's kubeconfigs.
+    for dir in ${KUBECONFIG_DIR}/federation/kubernetes-apiserver/*; do
+      # We create a secret with the same name as the directory name (which is
+      # same as cluster name in kubeconfig)
+      name=$(basename $dir)
+      $host_kubectl create secret generic ${name} --from-file="${dir}/kubeconfig" --namespace="${FEDERATION_NAMESPACE}"
+    done
+
+    # Update the users kubeconfig to include federation-apiserver credentials.
+    CONTEXT=federated-cluster \
+	   KUBE_BEARER_TOKEN="$FEDERATION_API_TOKEN" \
+	   SECONDARY_KUBECONFIG=true \
+	   create-kubeconfig
 
     # Don't finish provisioning until federation-apiserver pod is running
     for i in {1..30};do
@@ -123,10 +170,23 @@ function create-federated-api-objects {
 	sleep 4
     done
 
-    CONTEXT=federated-cluster \
-	   KUBE_BEARER_TOKEN="$FEDERATION_API_TOKEN" \
-	   SECONDARY_KUBECONFIG=true \
-	   create-kubeconfig
+    # Verify that federation-controller-manager pod is running.
+    for i in {1..30};do
+	#TODO(colhom): in the future this needs to scale out for N pods. This assumes just one pod
+	phase="$($host_kubectl get -o=jsonpath pods -lapp=federated-cluster,module=federation-controller-manager --template '{.items[*].status.phase}')"
+	echo "Waiting for federation-controller-manager to be running...(phase= $phase)"
+	if [[ "$phase" == "Running" ]];then
+	    echo "federation-controller-manager pod is running!"
+	    break
+	fi
+
+	if [[ $i -eq 30 ]];then
+	    echo "federation-controller-manager pod is not running! giving up."
+	    exit 1
+	fi
+
+	sleep 4
+    done
 )
 }
 
@@ -135,9 +195,9 @@ function create-federated-api-objects {
 
 # Optional
 # FEDERATION_IMAGE_TAG: push all federated images with this tag. Used for ci testing
-function push-federated-images {
+function push-federation-images {
     : "${FEDERATION_PUSH_REPO_BASE?Must set FEDERATION_PUSH_REPO_BASE env var}"
-    local FEDERATION_BINARIES=${FEDERATION_BINARIES:-'federation-apiserver'}
+    local FEDERATION_BINARIES=${FEDERATION_BINARIES:-"federation-apiserver federation-controller-manager"}
 
     local imageFolder="${KUBE_ROOT}/_output/${KUBE_BUILD_STAGE}/server/${KUBE_PLATFORM}-${KUBE_ARCH}/kubernetes/server/bin"
 
@@ -184,6 +244,9 @@ function push-federated-images {
 
     done
 }
-function cleanup-federated-api-objects {
-    $host_kubectl delete pods,svc,rc,deployment,secret -lapp=federated-cluster
+function cleanup-federation-api-objects {
+  # Delete all resources with the federated-cluster label.
+  $host_kubectl delete pods,svc,rc,deployment,secret -lapp=federated-cluster
+  # Delete all resources in FEDERATION_NAMESPACE.
+  $host_kubectl delete pods,svc,rc,deployment,secret --namespace=${FEDERATION_NAMESPACE} --all
 }

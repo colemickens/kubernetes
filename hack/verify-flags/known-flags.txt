@@ -70,6 +70,9 @@ configure-cbr0
 configure-cloud-routes
 conntrack-max
 conntrack-tcp-timeout-established
+consumer-port
+consumer-service-name
+consumer-service-namespace
 contain-pod-resources
 container-port
 container-runtime
@@ -85,6 +88,8 @@ default-container-cpu-limit
 default-container-mem-limit
 delay-shutdown
 delete-collection-workers
+delete-instances
+delete-local-data
 delete-namespace
 deleting-pods-burst
 deleting-pods-qps
@@ -94,6 +99,8 @@ deserialization-cache-size
 dest-file
 disable-filter
 dns-port
+dns-provider
+dns-provider-config
 docker-email
 docker-endpoint
 docker-exec-handler
@@ -108,6 +115,7 @@ dump-logs-on-failure
 duration-sec
 e2e-output-dir
 e2e-verify-service-account
+enable-controller-attach-detach
 enable-custom-metrics
 enable-debugging-handlers
 enable-garbage-collector
@@ -190,6 +198,7 @@ ignore-daemonsets
 ignore-not-found
 image-gc-high-threshold
 image-gc-low-threshold
+image-project
 image-pull-policy
 include-extended-apis
 included-types-overrides
@@ -407,6 +416,7 @@ service-node-ports
 service-overrides
 service-sync-period
 session-affinity
+setup-node
 show-all
 show-events
 show-labels

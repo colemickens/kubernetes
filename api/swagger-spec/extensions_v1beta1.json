@@ -1,7 +1,7 @@
 {
   "swaggerVersion": "1.2",
   "apiVersion": "extensions/v1beta1",
-  "basePath": "https://10.10.10.10:443",
+  "basePath": "https://10.10.10.10:6443",
   "resourcePath": "/apis/extensions/v1beta1",
   "apis": [
    {
@@ -6949,7 +6949,7 @@
       "items": {
        "$ref": "v1.OwnerReference"
       },
-      "description": "List of objects depended by this object. If ALL objects in the list have been deleted, this object will be garbage collected."
+      "description": "List of objects depended by this object. If ALL objects in the list have been deleted, this object will be garbage collected. If this object is managed by a controller, then an entry in this list will point to this controller, with the controller field set to true. There cannot be more than one managing controller."
      },
      "finalizers": {
       "type": "array",
@@ -6985,6 +6985,10 @@
      "uid": {
       "type": "string",
       "description": "UID of the referent. More info: http://releases.k8s.io/HEAD/docs/user-guide/identifiers.md#uids"
+     },
+     "controller": {
+      "type": "boolean",
+      "description": "If true, this reference points to the managing controller."
      }
     }
    },
@@ -7475,11 +7479,7 @@
     "description": "Represents a Rados Block Device mount that lasts the lifetime of a pod. RBD volumes support ownership management and SELinux relabeling.",
     "required": [
      "monitors",
-     "image",
-     "pool",
-     "user",
-     "keyring",
-     "secretRef"
+     "image"
     ],
     "properties": {
      "monitors": {
@@ -7511,7 +7511,7 @@
      },
      "secretRef": {
       "$ref": "v1.LocalObjectReference",
-      "description": "SecretRef is name of the authentication secret for RBDUser. If provided overrides keyring. Default is empty. More info: http://releases.k8s.io/HEAD/examples/rbd/README.md#how-to-use-it"
+      "description": "SecretRef is name of the authentication secret for RBDUser. If provided overrides keyring. Default is nil. More info: http://releases.k8s.io/HEAD/examples/rbd/README.md#how-to-use-it"
      },
      "readOnly": {
       "type": "boolean",
