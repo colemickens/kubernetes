@@ -6,9 +6,8 @@ import (
 	"strings"
 
 	"k8s.io/kubernetes/pkg/api"
-	// "k8s.io/kubernetes/pkg/cloudprovider"
+	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 
-	//"github.com/Azure/azure-sdk-for-go/arm/compute"
 	"github.com/Azure/azure-sdk-for-go/arm/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/glog"
@@ -109,12 +108,20 @@ func (az *AzureCloud) EnsureLoadBalancer(clusterName string, service *api.Servic
 	// TODO: handle node lb pool eviction, but how?
 	lbBackendName := getBackendPoolName(clusterName)
 	lbBackendPoolID := az.getBackendPoolID(lbName, lbBackendName)
-	for _, host := range hosts {
-		// TODO: parallelize this
-		err = az.ensureHostInPool(serviceName, host, lbBackendPoolID)
-		if err != nil {
-			return nil, err
-		}
+	hostUpdates := make([]func() error, len(hosts))
+	for i, host := range hosts {
+		f := func(serviceName, host, lbBackendPoolID string) func() error {
+			return func() error {
+				glog.Infof("ensureHostInPool(%s): host(%s) - calling", serviceName, host)
+				return az.ensureHostInPool(serviceName, host, lbBackendPoolID)
+			}
+		}(serviceName, host, lbBackendPoolID)
+		hostUpdates[i] = f
+	}
+
+	errs := utilerrors.AggregateGoroutines(hostUpdates...)
+	if errs != nil {
+		return nil, utilerrors.Flatten(errs)
 	}
 
 	glog.Infof("ensure(%s): FINISH - %s", service.Name, *pip.Properties.IPAddress)
