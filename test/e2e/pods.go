@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,6 @@ import (
 	"golang.org/x/net/websocket"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/resource"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/kubelet"
@@ -281,7 +280,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 				Containers: []api.Container{
 					{
 						Name:  "nginx",
-						Image: "gcr.io/google_containers/nginx:1.7.9",
+						Image: "gcr.io/google_containers/nginx-slim:0.7",
 						Ports: []api.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &api.Probe{
 							Handler: api.Handler{
@@ -428,7 +427,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 				Containers: []api.Container{
 					{
 						Name:  "nginx",
-						Image: "gcr.io/google_containers/nginx:1.7.9",
+						Image: "gcr.io/google_containers/nginx-slim:0.7",
 						Ports: []api.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &api.Probe{
 							Handler: api.Handler{
@@ -462,29 +461,11 @@ var _ = framework.KubeDescribe("Pods", func() {
 		pods, err := podClient.List(options)
 		Expect(len(pods.Items)).To(Equal(1))
 
-		// Standard get, update retry loop
-		framework.ExpectNoError(wait.Poll(time.Millisecond*500, time.Second*30, func() (bool, error) {
-			By("updating the pod")
+		By("updating the pod")
+		f.UpdatePod(name, func(pod *api.Pod) {
 			value = strconv.Itoa(time.Now().Nanosecond())
-			if pod == nil { // on retries we need to re-get
-				pod, err = podClient.Get(name)
-				if err != nil {
-					return false, fmt.Errorf("failed to get pod: %v", err)
-				}
-			}
 			pod.Labels["time"] = value
-			pod, err = podClient.Update(pod)
-			if err == nil {
-				framework.Logf("Successfully updated pod")
-				return true, nil
-			}
-			if errors.IsConflict(err) {
-				framework.Logf("Conflicting update to pod, re-get and re-update: %v", err)
-				pod = nil // re-get it when we retry
-				return false, nil
-			}
-			return false, fmt.Errorf("failed to update pod: %v", err)
-		}))
+		})
 
 		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
 
@@ -514,7 +495,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 				Containers: []api.Container{
 					{
 						Name:  "nginx",
-						Image: "gcr.io/google_containers/nginx:1.7.9",
+						Image: "gcr.io/google_containers/nginx-slim:0.7",
 						Ports: []api.ContainerPort{{ContainerPort: 80}},
 						LivenessProbe: &api.Probe{
 							Handler: api.Handler{
@@ -548,30 +529,11 @@ var _ = framework.KubeDescribe("Pods", func() {
 		pods, err := podClient.List(options)
 		Expect(len(pods.Items)).To(Equal(1))
 
-		// Standard get, update retry loop
-		framework.ExpectNoError(wait.Poll(time.Millisecond*500, time.Second*30, func() (bool, error) {
-			By("updating the pod")
-			value = strconv.Itoa(time.Now().Nanosecond())
-			if pod == nil { // on retries we need to re-get
-				pod, err = podClient.Get(name)
-				if err != nil {
-					return false, fmt.Errorf("failed to get pod: %v", err)
-				}
-			}
+		By("updating the pod")
+		f.UpdatePod(name, func(pod *api.Pod) {
 			newDeadline := int64(5)
 			pod.Spec.ActiveDeadlineSeconds = &newDeadline
-			pod, err = podClient.Update(pod)
-			if err == nil {
-				framework.Logf("Successfully updated pod")
-				return true, nil
-			}
-			if errors.IsConflict(err) {
-				framework.Logf("Conflicting update to pod, re-get and re-update: %v", err)
-				pod = nil // re-get it when we retry
-				return false, nil
-			}
-			return false, fmt.Errorf("failed to update pod: %v", err)
-		}))
+		})
 
 		framework.ExpectNoError(f.WaitForPodTerminated(pod.Name, "DeadlineExceeded"))
 	})
@@ -664,6 +626,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 	})
 
 	It("should invoke init containers on a RestartNever pod", func() {
+		framework.SkipIfContainerRuntimeIs("rkt") // #25988
 		podClient := f.Client.Pods(f.Namespace.Name)
 
 		By("creating the pod")
@@ -729,6 +692,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 	})
 
 	It("should invoke init containers on a RestartAlways pod", func() {
+		framework.SkipIfContainerRuntimeIs("rkt") // #25988
 		podClient := f.Client.Pods(f.Namespace.Name)
 
 		By("creating the pod")
@@ -798,6 +762,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 	})
 
 	It("should not start app containers if init containers fail on a RestartAlways pod", func() {
+		framework.SkipIfContainerRuntimeIs("rkt") // #25988
 		podClient := f.Client.Pods(f.Namespace.Name)
 
 		By("creating the pod")
@@ -913,6 +878,7 @@ var _ = framework.KubeDescribe("Pods", func() {
 	})
 
 	It("should not start app containers and fail the pod if init containers fail on a RestartNever pod", func() {
+		framework.SkipIfContainerRuntimeIs("rkt") // #25988
 		podClient := f.Client.Pods(f.Namespace.Name)
 
 		By("creating the pod")
@@ -1343,15 +1309,10 @@ var _ = framework.KubeDescribe("Pods", func() {
 		delay1, delay2 := startPodAndGetBackOffs(f, pod, podName, containerName, buildBackOffDuration)
 
 		By("updating the image")
-		pod, err := podClient.Get(pod.Name)
-		if err != nil {
-			framework.Failf("failed to get pod: %v", err)
-		}
-		pod.Spec.Containers[0].Image = "gcr.io/google_containers/nginx:1.7.9"
-		pod, err = podClient.Update(pod)
-		if err != nil {
-			framework.Failf("error updating pod=%s/%s %v", podName, containerName, err)
-		}
+		f.UpdatePod(podName, func(pod *api.Pod) {
+			pod.Spec.Containers[0].Image = "gcr.io/google_containers/nginx-slim:0.7"
+		})
+
 		time.Sleep(syncLoopFrequency)
 		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
 
@@ -1426,182 +1387,4 @@ var _ = framework.KubeDescribe("Pods", func() {
 			framework.Failf("expected %s back-off got=%s on delay2", kubelet.MaxContainerBackOff, delay2)
 		}
 	})
-
-	// The following tests for remote command execution and port forwarding are
-	// commented out because the GCE environment does not currently have nsenter
-	// in the kubelet's PATH, nor does it have socat installed. Once we figure
-	// out the best way to have nsenter and socat available in GCE (and hopefully
-	// all providers), we can enable these tests.
-	/*
-		It("should support remote command execution", func() {
-			clientConfig, err := framework.LoadConfig()
-			if err != nil {
-				framework.Failf("Failed to create client config: %v", err)
-			}
-
-			podClient := f.Client.Pods(f.Namespace.Name)
-
-			By("creating the pod")
-			name := "pod-exec-" + string(util.NewUUID())
-			value := strconv.Itoa(time.Now().Nanosecond())
-			pod := &api.Pod{
-				ObjectMeta: api.ObjectMeta{
-					Name: name,
-					Labels: map[string]string{
-						"name": "foo",
-						"time": value,
-					},
-				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "nginx",
-							Image: "gcr.io/google_containers/nginx:1.7.9",
-						},
-					},
-				},
-			}
-
-			By("submitting the pod to kubernetes")
-			_, err = podClient.Create(pod)
-			if err != nil {
-				framework.Failf("Failed to create pod: %v", err)
-			}
-			defer func() {
-				// We call defer here in case there is a problem with
-				// the test so we can ensure that we clean up after
-				// ourselves
-				podClient.Delete(pod.Name, api.NewDeleteOptions(0))
-			}()
-
-			By("waiting for the pod to start running")
-			framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
-
-			By("verifying the pod is in kubernetes")
-			selector := labels.SelectorFromSet(labels.Set(map[string]string{"time": value}))
-			options := api.ListOptions{LabelSelector: selector}
-			pods, err := podClient.List(options)
-			if err != nil {
-				framework.Failf("Failed to query for pods: %v", err)
-			}
-			Expect(len(pods.Items)).To(Equal(1))
-
-			pod = &pods.Items[0]
-			By(fmt.Sprintf("executing command on host %s pod %s in container %s",
-				pod.Status.Host, pod.Name, pod.Spec.Containers[0].Name))
-			req := f.Client.Get().
-				Prefix("proxy").
-				Resource("nodes").
-				Name(pod.Status.Host).
-				Suffix("exec", f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
-
-			out := &bytes.Buffer{}
-			e := remotecommand.New(req, clientConfig, []string{"whoami"}, nil, out, nil, false)
-			err = e.Execute()
-			if err != nil {
-				framework.Failf("Failed to execute command on host %s pod %s in container %s: %v",
-					pod.Status.Host, pod.Name, pod.Spec.Containers[0].Name, err)
-			}
-			if e, a := "root\n", out.String(); e != a {
-				framework.Failf("exec: whoami: expected '%s', got '%s'", e, a)
-			}
-		})
-
-		It("should support port forwarding", func() {
-			clientConfig, err := framework.LoadConfig()
-			if err != nil {
-				framework.Failf("Failed to create client config: %v", err)
-			}
-
-			podClient := f.Client.Pods(f.Namespace.Name)
-
-			By("creating the pod")
-			name := "pod-portforward-" + string(util.NewUUID())
-			value := strconv.Itoa(time.Now().Nanosecond())
-			pod := &api.Pod{
-				ObjectMeta: api.ObjectMeta{
-					Name: name,
-					Labels: map[string]string{
-						"name": "foo",
-						"time": value,
-					},
-				},
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "nginx",
-							Image: "gcr.io/google_containers/nginx:1.7.9",
-							Ports: []api.Port{{ContainerPort: 80}},
-						},
-					},
-				},
-			}
-
-			By("submitting the pod to kubernetes")
-			_, err = podClient.Create(pod)
-			if err != nil {
-				framework.Failf("Failed to create pod: %v", err)
-			}
-			defer func() {
-				// We call defer here in case there is a problem with
-				// the test so we can ensure that we clean up after
-				// ourselves
-				podClient.Delete(pod.Name, api.NewDeleteOptions(0))
-			}()
-
-			By("waiting for the pod to start running")
-			framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
-
-			By("verifying the pod is in kubernetes")
-			selector := labels.SelectorFromSet(labels.Set(map[string]string{"time": value}))
-			options := api.ListOptions{LabelSelector: selector}
-			pods, err := podClient.List(options)
-			if err != nil {
-				framework.Failf("Failed to query for pods: %v", err)
-			}
-			Expect(len(pods.Items)).To(Equal(1))
-
-			pod = &pods.Items[0]
-			By(fmt.Sprintf("initiating port forwarding to host %s pod %s in container %s",
-				pod.Status.Host, pod.Name, pod.Spec.Containers[0].Name))
-
-			req := f.Client.Get().
-				Prefix("proxy").
-				Resource("nodes").
-				Name(pod.Status.Host).
-				Suffix("portForward", f.Namespace.Name, pod.Name)
-
-			stopChan := make(chan struct{})
-			pf, err := portforward.New(req, clientConfig, []string{"5678:80"}, stopChan)
-			if err != nil {
-				framework.Failf("Error creating port forwarder: %s", err)
-			}
-
-			errorChan := make(chan error)
-			go func() {
-				errorChan <- pf.ForwardPorts()
-			}()
-
-			// wait for listeners to start
-			<-pf.Ready
-
-			resp, err := http.Get("http://localhost:5678/")
-			if err != nil {
-				framework.Failf("Error with http get to localhost:5678: %s", err)
-			}
-			body, err := ioutil.ReadAll(resp.Body)
-			if err != nil {
-				framework.Failf("Error reading response body: %s", err)
-			}
-
-			titleRegex := regexp.MustCompile("<title>(.+)</title>")
-			matches := titleRegex.FindStringSubmatch(string(body))
-			if len(matches) != 2 {
-				Fail("Unable to locate page title in response HTML")
-			}
-			if e, a := "Welcome to nginx on Debian!", matches[1]; e != a {
-				framework.Failf("<title>: expected '%s', got '%s'", e, a)
-			}
-		})
-	*/
 })

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ import (
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/util/configz"
 	"k8s.io/kubernetes/pkg/util/wait"
+	"k8s.io/kubernetes/pkg/version"
 
 	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
@@ -70,6 +71,7 @@ ship with federation today is the cluster controller.`,
 
 // Run runs the CMServer.  This should never exit.
 func Run(s *options.CMServer) error {
+	glog.Infof("%+v", version.Get())
 	if c, err := configz.New("componentconfig"); err == nil {
 		c.Set(s.ControllerManagerConfiguration)
 	} else {

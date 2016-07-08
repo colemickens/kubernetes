@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"reflect"
 
 	"github.com/golang/glog"
-	v1alpha1 "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	v1beta1 "k8s.io/kubernetes/federation/apis/federation/v1beta1"
 	federationcache "k8s.io/kubernetes/federation/client/cache"
 	federation_release_1_3 "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
 	"k8s.io/kubernetes/federation/pkg/dnsprovider"
@@ -176,17 +176,17 @@ func New(federationClient federation_release_1_3.Interface, dns dnsprovider.Inte
 				return s.federationClient.Federation().Clusters().Watch(options)
 			},
 		},
-		&v1alpha1.Cluster{},
+		&v1beta1.Cluster{},
 		clusterSyncPeriod,
 		framework.ResourceEventHandlerFuncs{
 			DeleteFunc: s.clusterCache.delFromClusterSet,
 			AddFunc:    s.clusterCache.addToClientMap,
 			UpdateFunc: func(old, cur interface{}) {
-				oldCluster, ok := old.(*v1alpha1.Cluster)
+				oldCluster, ok := old.(*v1beta1.Cluster)
 				if !ok {
 					return
 				}
-				curCluster, ok := cur.(*v1alpha1.Cluster)
+				curCluster, ok := cur.(*v1beta1.Cluster)
 				if !ok {
 					return
 				}
@@ -263,6 +263,19 @@ func (s *ServiceController) init() error {
 		return fmt.Errorf("the dns provider does not support zone enumeration, which is required for creating dns records.")
 	}
 	s.dnsZones = zones
+	if _, err := getDnsZone(s.zoneName, s.dnsZones); err != nil {
+		glog.Infof("DNS zone %q not found.  Creating DNS zone %q.", s.zoneName, s.zoneName)
+		managedZone, err := s.dnsZones.New(s.zoneName)
+		if err != nil {
+			return err
+		}
+		zone, err := s.dnsZones.Add(managedZone)
+		if err != nil {
+			return err
+		}
+		glog.Infof("DNS zone %q successfully created.  Note that DNS resolution will not work until you have registered this name with "+
+			"a DNS registrar and they have changed the authoritative name servers for your domain to point to your DNS provider.", zone.Name())
+	}
 	return nil
 }
 
@@ -595,7 +608,7 @@ func portEqualExcludeNodePort(x, y *v1.ServicePort) bool {
 	return true
 }
 
-func clustersFromList(list *v1alpha1.ClusterList) []string {
+func clustersFromList(list *v1beta1.ClusterList) []string {
 	result := []string{}
 	for ix := range list.Items {
 		result = append(result, list.Items[ix].Name)
@@ -606,7 +619,7 @@ func clustersFromList(list *v1alpha1.ClusterList) []string {
 // getClusterConditionPredicate filter all clusters meet condition of
 // condition.type=Ready and condition.status=true
 func getClusterConditionPredicate() federationcache.ClusterConditionPredicate {
-	return func(cluster v1alpha1.Cluster) bool {
+	return func(cluster v1beta1.Cluster) bool {
 		// If we have no info, don't accept
 		if len(cluster.Status.Conditions) == 0 {
 			return false
@@ -614,7 +627,7 @@ func getClusterConditionPredicate() federationcache.ClusterConditionPredicate {
 		for _, cond := range cluster.Status.Conditions {
 			//We consider the cluster for load balancing only when its ClusterReady condition status
 			//is ConditionTrue
-			if cond.Type == v1alpha1.ClusterReady && cond.Status != v1.ConditionTrue {
+			if cond.Type == v1beta1.ClusterReady && cond.Status != v1.ConditionTrue {
 				glog.V(4).Infof("Ignoring cluser %v with %v condition status %v", cluster.Name, cond.Type, cond.Status)
 				return false
 			}
@@ -707,17 +720,22 @@ func (s *ServiceController) updateDNSRecords(services []*cachedService, clusters
 
 // lockedUpdateDNSRecords Updates the DNS records of a service, assuming we hold the mutex
 // associated with the service.
-// TODO: quinton: Still screwed up in the same way as above.  Fix.
 func (s *ServiceController) lockedUpdateDNSRecords(service *cachedService, clusterNames []string) error {
 	if !wantsDNSRecords(service.appliedState) {
 		return nil
 	}
+	ensuredCount := 0
 	for key := range s.clusterCache.clientMap {
 		for _, clusterName := range clusterNames {
 			if key == clusterName {
 				s.ensureDnsRecords(clusterName, service)
+				ensuredCount += 1
 			}
 		}
+	}
+	if ensuredCount < len(clusterNames) {
+		return fmt.Errorf("Failed to update DNS records for %d of %d clusters for service %v due to missing clients for those clusters",
+			len(clusterNames)-ensuredCount, len(clusterNames), service)
 	}
 	return nil
 }

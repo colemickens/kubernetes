@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -125,7 +125,7 @@ func (s *ServiceController) Run(serviceSyncPeriod, nodeSyncPeriod time.Duration)
 		return err
 	}
 
-	// We have to make this check beecause the ListWatch that we use in
+	// We have to make this check because the ListWatch that we use in
 	// WatchServices requires Client functions that aren't in the interface
 	// for some reason.
 	if _, ok := s.kubeClient.(*clientset.Clientset); !ok {
@@ -258,7 +258,7 @@ func (s *ServiceController) processDelta(delta *cache.Delta) (error, time.Durati
 	} else if errors.IsNotFound(err) {
 		glog.V(2).Infof("Service %v not found, ensuring load balancer is deleted", namespacedName)
 		s.eventRecorder.Event(deltaService, api.EventTypeNormal, "DeletingLoadBalancer", "Deleting load balancer")
-		err := s.balancer.EnsureLoadBalancerDeleted(deltaService)
+		err := s.balancer.EnsureLoadBalancerDeleted(s.clusterName, deltaService)
 		if err != nil {
 			message := "Error deleting load balancer (will retry): " + err.Error()
 			s.eventRecorder.Event(deltaService, api.EventTypeWarning, "DeletingLoadBalancerFailed", message)
@@ -322,7 +322,7 @@ func (s *ServiceController) createLoadBalancerIfNeeded(namespacedName types.Name
 			// If we don't have any cached memory of the load balancer, we have to ask
 			// the cloud provider for what it knows about it.
 			// Technically EnsureLoadBalancerDeleted can cope, but we want to post meaningful events
-			_, exists, err := s.balancer.GetLoadBalancer(service)
+			_, exists, err := s.balancer.GetLoadBalancer(s.clusterName, service)
 			if err != nil {
 				return fmt.Errorf("Error getting LB for service %s: %v", namespacedName, err), retryable
 			}
@@ -334,7 +334,7 @@ func (s *ServiceController) createLoadBalancerIfNeeded(namespacedName types.Name
 		if needDelete {
 			glog.Infof("Deleting existing load balancer for service %s that no longer needs a load balancer.", namespacedName)
 			s.eventRecorder.Event(service, api.EventTypeNormal, "DeletingLoadBalancer", "Deleting load balancer")
-			if err := s.balancer.EnsureLoadBalancerDeleted(service); err != nil {
+			if err := s.balancer.EnsureLoadBalancerDeleted(s.clusterName, service); err != nil {
 				return err, retryable
 			}
 			s.eventRecorder.Event(service, api.EventTypeNormal, "DeletedLoadBalancer", "Deleted load balancer")
@@ -407,7 +407,7 @@ func (s *ServiceController) createLoadBalancer(service *api.Service) error {
 	// - Only one protocol supported per service
 	// - Not all cloud providers support all protocols and the next step is expected to return
 	//   an error for unsupported protocols
-	status, err := s.balancer.EnsureLoadBalancer(service, hostsFromNodeList(&nodes))
+	status, err := s.balancer.EnsureLoadBalancer(s.clusterName, service, hostsFromNodeList(&nodes))
 	if err != nil {
 		return err
 	} else {
@@ -641,7 +641,7 @@ func hostsFromNodeList(list *api.NodeList) []string {
 }
 
 func getNodeConditionPredicate() cache.NodeConditionPredicate {
-	return func(node api.Node) bool {
+	return func(node *api.Node) bool {
 		// We add the master to the node list, but its unschedulable.  So we use this to filter
 		// the master.
 		// TODO: Use a node annotation to indicate the master
@@ -728,14 +728,14 @@ func (s *ServiceController) lockedUpdateLoadBalancerHosts(service *api.Service, 
 	}
 
 	// This operation doesn't normally take very long (and happens pretty often), so we only record the final event
-	err := s.balancer.UpdateLoadBalancer(service, hosts)
+	err := s.balancer.UpdateLoadBalancer(s.clusterName, service, hosts)
 	if err == nil {
 		s.eventRecorder.Event(service, api.EventTypeNormal, "UpdatedLoadBalancer", "Updated load balancer with new hosts")
 		return nil
 	}
 
 	// It's only an actual error if the load balancer still exists.
-	if _, exists, err := s.balancer.GetLoadBalancer(service); err != nil {
+	if _, exists, err := s.balancer.GetLoadBalancer(s.clusterName, service); err != nil {
 		glog.Errorf("External error while checking if load balancer %q exists: name, %v", cloudprovider.GetLoadBalancerName(service), err)
 	} else if !exists {
 		return nil

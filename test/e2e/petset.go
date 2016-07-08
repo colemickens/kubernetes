@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -449,7 +449,7 @@ func (p *petSetTester) execInPets(ps *apps.PetSet, cmd string) error {
 }
 
 func (p *petSetTester) saturate(ps *apps.PetSet) {
-	// TOOD: Watch events and check that creation timestamps don't overlap
+	// TODO: Watch events and check that creation timestamps don't overlap
 	for i := 0; i < ps.Spec.Replicas; i++ {
 		framework.Logf("Waiting for pet at index " + fmt.Sprintf("%v", i+1) + " to enter Running")
 		p.waitForRunning(i+1, ps)
@@ -737,7 +737,7 @@ func newPetSet(name, ns, governingSvcName string, replicas int, petMounts []api.
 					Containers: []api.Container{
 						{
 							Name:         "nginx",
-							Image:        "gcr.io/google_containers/nginx-slim:0.5",
+							Image:        "gcr.io/google_containers/nginx-slim:0.7",
 							VolumeMounts: mounts,
 						},
 					},

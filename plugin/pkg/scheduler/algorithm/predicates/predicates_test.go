@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -719,7 +719,7 @@ func TestPodFitsSelector(t *testing.T) {
 								"matchExpressions": [{
 									"key": "kernel-version",
 									"operator": "Gt",
-									"values": ["2.4"]
+									"values": ["0204"]
 								}]
 							}]
 						}}}`,
@@ -727,7 +727,8 @@ func TestPodFitsSelector(t *testing.T) {
 				},
 			},
 			labels: map[string]string{
-				"kernel-version": "2.6",
+				// We use two digit to denote major version and two digit for minior version.
+				"kernel-version": "0206",
 			},
 			fits: true,
 			test: "Pod with matchExpressions using Gt operator that matches the existing node",
@@ -1392,6 +1393,32 @@ func TestEBSVolumeCountConflicts(t *testing.T) {
 			},
 		},
 	}
+	deletedPVCPod := &api.Pod{
+		Spec: api.PodSpec{
+			Volumes: []api.Volume{
+				{
+					VolumeSource: api.VolumeSource{
+						PersistentVolumeClaim: &api.PersistentVolumeClaimVolumeSource{
+							ClaimName: "deletedPVC",
+						},
+					},
+				},
+			},
+		},
+	}
+	deletedPVPod := &api.Pod{
+		Spec: api.PodSpec{
+			Volumes: []api.Volume{
+				{
+					VolumeSource: api.VolumeSource{
+						PersistentVolumeClaim: &api.PersistentVolumeClaimVolumeSource{
+							ClaimName: "pvcWithDeletedPV",
+						},
+					},
+				},
+			},
+		},
+	}
 	emptyPod := &api.Pod{
 		Spec: api.PodSpec{},
 	}
@@ -1466,6 +1493,34 @@ func TestEBSVolumeCountConflicts(t *testing.T) {
 			fits:         true,
 			test:         "the same EBS volumes are not counted multiple times",
 		},
+		{
+			newPod:       ebsPVCPod,
+			existingPods: []*api.Pod{oneVolPod, deletedPVCPod},
+			maxVols:      2,
+			fits:         false,
+			test:         "pod with missing PVC is counted towards the PV limit",
+		},
+		{
+			newPod:       ebsPVCPod,
+			existingPods: []*api.Pod{oneVolPod, deletedPVCPod},
+			maxVols:      3,
+			fits:         true,
+			test:         "pod with missing PVC is counted towards the PV limit",
+		},
+		{
+			newPod:       ebsPVCPod,
+			existingPods: []*api.Pod{oneVolPod, deletedPVPod},
+			maxVols:      2,
+			fits:         false,
+			test:         "pod with missing PV is counted towards the PV limit",
+		},
+		{
+			newPod:       ebsPVCPod,
+			existingPods: []*api.Pod{oneVolPod, deletedPVPod},
+			maxVols:      3,
+			fits:         true,
+			test:         "pod with missing PV is counted towards the PV limit",
+		},
 	}
 
 	pvInfo := FakePersistentVolumeInfo{
@@ -1473,7 +1528,7 @@ func TestEBSVolumeCountConflicts(t *testing.T) {
 			ObjectMeta: api.ObjectMeta{Name: "someEBSVol"},
 			Spec: api.PersistentVolumeSpec{
 				PersistentVolumeSource: api.PersistentVolumeSource{
-					AWSElasticBlockStore: &api.AWSElasticBlockStoreVolumeSource{},
+					AWSElasticBlockStore: &api.AWSElasticBlockStoreVolumeSource{VolumeID: "ebsVol"},
 				},
 			},
 		},
@@ -1493,6 +1548,10 @@ func TestEBSVolumeCountConflicts(t *testing.T) {
 		{
 			ObjectMeta: api.ObjectMeta{Name: "someNonEBSVol"},
 			Spec:       api.PersistentVolumeClaimSpec{VolumeName: "someNonEBSVol"},
+		},
+		{
+			ObjectMeta: api.ObjectMeta{Name: "pvcWithDeletedPV"},
+			Spec:       api.PersistentVolumeClaimSpec{VolumeName: "pvcWithDeletedPV"},
 		},
 	}
 

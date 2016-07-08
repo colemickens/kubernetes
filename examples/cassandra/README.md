@@ -22,7 +22,7 @@ refer to the docs that go with that version.
 <!-- TAG RELEASE_LINK, added by the munger automatically -->
 <strong>
 The latest release of this document can be found
-[here](http://releases.k8s.io/release-1.2/examples/cassandra/README.md).
+[here](http://releases.k8s.io/release-1.3/examples/cassandra/README.md).
 
 Documentation for other releases can be found at
 [releases.k8s.io](http://releases.k8s.io).
@@ -281,7 +281,7 @@ The `selector` attribute contains the controller's selector query. It can be
 explicitly specified, or applied automatically from the labels in the pod
 template if not set, as is done here.
 
-The pod template's label, `app:cassandra`, matches matches the Service selector
+The pod template's label, `app:cassandra`, matches the Service selector
 from Step 1. This is how pods created by this replication controller are picked up
 by the Service."
 

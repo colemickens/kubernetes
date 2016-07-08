@@ -1,0 +1,5 @@
+package azure
+
+func init() {
+
+}

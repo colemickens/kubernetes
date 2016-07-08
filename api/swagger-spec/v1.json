@@ -15860,10 +15860,12 @@
      },
      "creationTimestamp": {
       "type": "string",
+      "format": "date-time",
       "description": "CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.\n\nPopulated by the system. Read-only. Null for lists. More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata"
      },
      "deletionTimestamp": {
       "type": "string",
+      "format": "date-time",
       "description": "DeletionTimestamp is RFC 3339 date and time at which this resource will be deleted. This field is set by the server when a graceful deletion is requested by the user, and is not directly settable by a client. The resource will be deleted (no longer visible from resource lists, and not reachable by name) after the time in this field. Once set, this value may not be unset or be set further into the future, although it may be shortened or the resource may be deleted prior to this time. For example, a user may request that a pod is deleted in 30 seconds. The Kubelet will react by sending a graceful termination signal to the containers in the pod. Once the resource is deleted in the API, the Kubelet will send a hard termination signal to the container. If not set, graceful deletion of the object has not been requested.\n\nPopulated by the system when a graceful deletion is requested. Read-only. More info: http://releases.k8s.io/HEAD/docs/devel/api-conventions.md#metadata"
      },
      "deletionGracePeriodSeconds": {
@@ -16433,10 +16435,12 @@
      },
      "firstTimestamp": {
       "type": "string",
+      "format": "date-time",
       "description": "The time at which the event was first recorded. (Time of server receipt is in TypeMeta.)"
      },
      "lastTimestamp": {
       "type": "string",
+      "format": "date-time",
       "description": "The time at which the most recent occurrence of this event was recorded."
      },
      "count": {
@@ -16765,9 +16769,16 @@
      "volumesInUse": {
       "type": "array",
       "items": {
-       "$ref": "v1.UniqueDeviceName"
+       "$ref": "v1.UniqueVolumeName"
       },
-      "description": "List of volumes in use (mounted) by the node."
+      "description": "List of attachable volumes in use (mounted) by the node."
+     },
+     "volumesAttached": {
+      "type": "array",
+      "items": {
+       "$ref": "v1.AttachedVolume"
+      },
+      "description": "List of volumes that are attached to the node."
      }
     }
    },
@@ -16789,10 +16800,12 @@
      },
      "lastHeartbeatTime": {
       "type": "string",
+      "format": "date-time",
       "description": "Last time we got an update on a given condition."
      },
      "lastTransitionTime": {
       "type": "string",
+      "format": "date-time",
       "description": "Last time the condition transit from one status to another."
      },
      "reason": {
@@ -16926,9 +16939,27 @@
      }
     }
    },
-   "v1.UniqueDeviceName": {
-    "id": "v1.UniqueDeviceName",
+   "v1.UniqueVolumeName": {
+    "id": "v1.UniqueVolumeName",
     "properties": {}
+   },
+   "v1.AttachedVolume": {
+    "id": "v1.AttachedVolume",
+    "description": "AttachedVolume describes a volume attached to a node",
+    "required": [
+     "name",
+     "devicePath"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "description": "Name of the attached volume"
+     },
+     "devicePath": {
+      "type": "string",
+      "description": "DevicePath represents the device path where the volume should be avilable"
+     }
+    }
    },
    "v1.PersistentVolumeClaimList": {
     "id": "v1.PersistentVolumeClaimList",
@@ -18540,6 +18571,7 @@
      },
      "startTime": {
       "type": "string",
+      "format": "date-time",
       "description": "RFC 3339 date and time at which the object was acknowledged by the Kubelet. This is before the Kubelet pulled the container image(s) for the pod."
      },
      "containerStatuses": {
@@ -18569,10 +18601,12 @@
      },
      "lastProbeTime": {
       "type": "string",
+      "format": "date-time",
       "description": "Last time we probed the condition."
      },
      "lastTransitionTime": {
       "type": "string",
+      "format": "date-time",
       "description": "Last time the condition transitioned from one status to another."
      },
      "reason": {
@@ -18669,6 +18703,7 @@
     "properties": {
      "startedAt": {
       "type": "string",
+      "format": "date-time",
       "description": "Time at which the container was last (re-)started"
      }
     }
@@ -18700,10 +18735,12 @@
      },
      "startedAt": {
       "type": "string",
+      "format": "date-time",
       "description": "Time at which previous execution of the container started"
      },
      "finishedAt": {
       "type": "string",
+      "format": "date-time",
       "description": "Time at which the container last terminated"
      },
      "containerID": {
@@ -19065,6 +19102,10 @@
       "type": "object",
       "description": "Data contains the secret data. Each key must be a valid DNS_SUBDOMAIN or leading dot followed by valid DNS_SUBDOMAIN. The serialized form of the secret data is a base64 encoded string, representing the arbitrary (possibly non-string) data value here. Described in https://tools.ietf.org/html/rfc4648#section-4"
      },
+     "stringData": {
+      "type": "object",
+      "description": "stringData allows specifying non-binary secret data in string form. It is provided as a write-only convenience method. All keys and values are merged into the data field on write, overwriting any existing values. It is never output when reading from the API."
+     },
      "type": {
       "type": "string",
       "description": "Used to facilitate programmatic handling of secret data."
@@ -19201,7 +19242,7 @@
      },
      "selector": {
       "type": "object",
-      "description": "This service will route traffic to pods having labels matching this selector. Label keys and values that must match in order to receive traffic for this service. If empty, all pods are selected, if not specified, endpoints must be manually specified. More info: http://releases.k8s.io/HEAD/docs/user-guide/services.md#overview"
+      "description": "This service will route traffic to pods having labels matching this selector. Label keys and values that must match in order to receive traffic for this service. If not specified, endpoints must be manually specified and the system will not automatically manage them. More info: http://releases.k8s.io/HEAD/docs/user-guide/services.md#overview"
      },
      "clusterIP": {
       "type": "string",

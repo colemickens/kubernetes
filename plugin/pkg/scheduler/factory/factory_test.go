@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -464,7 +464,7 @@ func TestNodeConditionPredicate(t *testing.T) {
 
 	nodeNames := []string{}
 	for _, node := range nodeList.Items {
-		if nodeFunc(node) {
+		if nodeFunc(&node) {
 			nodeNames = append(nodeNames, node.Name)
 		}
 	}

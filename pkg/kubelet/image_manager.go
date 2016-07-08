@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	"k8s.io/kubernetes/pkg/kubelet/container"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
 )
@@ -213,8 +214,12 @@ func (im *realImageManager) GarbageCollect() error {
 	if err != nil {
 		return err
 	}
-	usage := int64(fsInfo.Usage)
 	capacity := int64(fsInfo.Capacity)
+	available := int64(fsInfo.Available)
+	if available > capacity {
+		glog.Warningf("available %d is larger than capacity %d", available, capacity)
+		available = capacity
+	}
 
 	// Check valid capacity.
 	if capacity == 0 {
@@ -224,9 +229,9 @@ func (im *realImageManager) GarbageCollect() error {
 	}
 
 	// If over the max threshold, free enough to place us at the lower threshold.
-	usagePercent := int(usage * 100 / capacity)
+	usagePercent := 100 - int(available*100/capacity)
 	if usagePercent >= im.policy.HighThresholdPercent {
-		amountToFree := usage - (int64(im.policy.LowThresholdPercent) * capacity / 100)
+		amountToFree := capacity*int64(100-im.policy.LowThresholdPercent)/100 - available
 		glog.Infof("[ImageManager]: Disk usage on %q (%s) is at %d%% which is over the high threshold (%d%%). Trying to free %d bytes", fsInfo.Device, fsInfo.Mountpoint, usagePercent, im.policy.HighThresholdPercent, amountToFree)
 		freed, err := im.freeSpace(amountToFree, time.Now())
 		if err != nil {
@@ -269,7 +274,7 @@ func (im *realImageManager) freeSpace(bytesToFree int64, freeTime time.Time) (in
 	sort.Sort(byLastUsedAndDetected(images))
 
 	// Delete unused images until we've freed up enough space.
-	var lastErr error
+	var deletionErrors []error
 	spaceFreed := int64(0)
 	for _, image := range images {
 		glog.V(5).Infof("Evaluating image ID %s for possible garbage collection", image.id)
@@ -291,7 +296,7 @@ func (im *realImageManager) freeSpace(bytesToFree int64, freeTime time.Time) (in
 		glog.Infof("[ImageManager]: Removing image %q to free %d bytes", image.id, image.size)
 		err := im.runtime.RemoveImage(container.ImageSpec{Image: image.id})
 		if err != nil {
-			lastErr = err
+			deletionErrors = append(deletionErrors, err)
 			continue
 		}
 		delete(im.imageRecords, image.id)
@@ -302,7 +307,10 @@ func (im *realImageManager) freeSpace(bytesToFree int64, freeTime time.Time) (in
 		}
 	}
 
-	return spaceFreed, lastErr
+	if len(deletionErrors) > 0 {
+		return spaceFreed, fmt.Errorf("wanted to free %d, but freed %d space with errors in image deletion: %v", bytesToFree, spaceFreed, errors.NewAggregate(deletionErrors))
+	}
+	return spaceFreed, nil
 }
 
 type evictionInfo struct {

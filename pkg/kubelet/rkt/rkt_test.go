@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -1694,7 +1694,8 @@ func TestGarbageCollect(t *testing.T) {
 			getter.pods[p.UID] = p
 		}
 
-		err := rkt.GarbageCollect(tt.gcPolicy)
+		allSourcesReady := true
+		err := rkt.GarbageCollect(tt.gcPolicy, allSourcesReady)
 		assert.NoError(t, err, testCaseHint)
 
 		sort.Sort(sortedStringList(tt.expectedCommands))
@@ -1831,15 +1832,15 @@ func TestPreparePodArgs(t *testing.T) {
 					},
 				},
 			},
-			"stage1-path",
+			"stage1-image0",
 			[]string{"prepare", "--quiet", "--pod-manifest", "file", "--stage1-name=stage1-image"},
 		},
 		{
 			appcschema.PodManifest{
 				Annotations: appctypes.Annotations{},
 			},
-			"stage1-path",
-			[]string{"prepare", "--quiet", "--pod-manifest", "file", "--stage1-path=stage1-path"},
+			"stage1-image0",
+			[]string{"prepare", "--quiet", "--pod-manifest", "file", "--stage1-name=stage1-image0"},
 		},
 		{
 			appcschema.PodManifest{

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package priorities
 
 import (
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/plugin/pkg/scheduler/api"
@@ -82,7 +83,8 @@ func (s *TaintToleration) ComputeTaintTolerationPriority(pod *api.Pod, nodeNameT
 	tolerationList := getAllTolerationPreferNoSchedule(tolerations)
 
 	// calculate the intolerable taints for all the nodes
-	for _, node := range nodes.Items {
+	for i := range nodes.Items {
+		node := &nodes.Items[i]
 		taints, err := api.GetTaintsFromNodeAnnotations(node.Annotations)
 		if err != nil {
 			return nil, err
@@ -98,12 +100,14 @@ func (s *TaintToleration) ComputeTaintTolerationPriority(pod *api.Pod, nodeNameT
 	// The maximum priority value to give to a node
 	// Priority values range from 0 - maxPriority
 	const maxPriority = 10
-	result := []schedulerapi.HostPriority{}
+	result := make(schedulerapi.HostPriorityList, 0, len(nodes.Items))
 	for _, node := range nodes.Items {
 		fScore := float64(maxPriority)
 		if maxCount > 0 {
 			fScore = (1.0 - float64(counts[node.Name])/float64(maxCount)) * 10
 		}
+		glog.V(10).Infof("%v -> %v: Taint Toleration Priority, Score: (%d)", pod.Name, node.Name, int(fScore))
+
 		result = append(result, schedulerapi.HostPriority{Host: node.Name, Score: int(fScore)})
 	}
 	return result, nil
