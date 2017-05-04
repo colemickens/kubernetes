@@ -545,6 +545,11 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 			}
 		}
 
+		loadDistribution := network.Default
+		if service.Spec.SessionAffinity == v1.ServiceAffinityClientIP {
+			// TODO: code review: do we want to do SourceIP or SourceIPProtocol ?
+			loadDistribution = network.SourceIP
+		}
 		expectedRules[i] = network.LoadBalancingRule{
 			Name: &lbRuleName,
 			LoadBalancingRulePropertiesFormat: &network.LoadBalancingRulePropertiesFormat{
@@ -555,6 +560,7 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 				BackendAddressPool: &network.SubResource{
 					ID: to.StringPtr(lbBackendPoolID),
 				},
+				LoadDistribution: loadDistribution,
 				FrontendPort:     to.Int32Ptr(port.Port),
 				BackendPort:      to.Int32Ptr(port.Port),
 				EnableFloatingIP: to.BoolPtr(true),
@@ -688,8 +694,11 @@ func (az *Cloud) reconcileSecurityGroup(sg network.SecurityGroup, clusterName st
 		}
 		for j := range sourceAddressPrefixes {
 			ix := i*len(sourceAddressPrefixes) + j
+			safePrefix := strings.Replace(sourceAddressPrefixes[j], "/", "_", -1)
+			prefixRuleName := fmt.Sprintf("%s-%d-%s", securityRuleName, ix, safePrefix)
+
 			expectedSecurityRules[ix] = network.SecurityRule{
-				Name: to.StringPtr(securityRuleName),
+				Name: to.StringPtr(prefixRuleName),
 				SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
 					Protocol:                 *securityProto,
 					SourcePortRange:          to.StringPtr("*"),
