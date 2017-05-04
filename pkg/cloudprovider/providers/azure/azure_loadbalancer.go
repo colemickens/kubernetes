@@ -514,6 +514,13 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 		}
 
 		if serviceapi.NeedsHealthCheck(service) {
+			if port.Protocol == v1.ProtocolUDP {
+				// ERROR: this isn't supported
+				// health check (aka source ip preservation) is not
+				// compatible with UDP (it uses an HTTP check)
+				return lb, false, fmt.Errorf("Sevices requiring health checks are incompatible with UDP ports.")
+			}
+
 			podPresencePath, podPresencePort := serviceapi.GetServiceHealthCheckPathPort(service)
 
 			expectedProbes[i] = network.Probe{
@@ -530,7 +537,7 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 			expectedProbes[i] = network.Probe{
 				Name: &lbRuleName,
 				ProbePropertiesFormat: &network.ProbePropertiesFormat{
-					Protocol:          probeProto,
+					Protocol:          *probeProto,
 					Port:              to.Int32Ptr(port.NodePort),
 					IntervalInSeconds: to.Int32Ptr(5),
 					NumberOfProbes:    to.Int32Ptr(2),
@@ -541,20 +548,24 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 		expectedRules[i] = network.LoadBalancingRule{
 			Name: &lbRuleName,
 			LoadBalancingRulePropertiesFormat: &network.LoadBalancingRulePropertiesFormat{
-				Protocol: transportProto,
+				Protocol: *transportProto,
 				FrontendIPConfiguration: &network.SubResource{
 					ID: to.StringPtr(lbFrontendIPConfigID),
 				},
 				BackendAddressPool: &network.SubResource{
 					ID: to.StringPtr(lbBackendPoolID),
 				},
-				Probe: &network.SubResource{
-					ID: to.StringPtr(az.getLoadBalancerProbeID(lbName, lbRuleName)),
-				},
 				FrontendPort:     to.Int32Ptr(port.Port),
 				BackendPort:      to.Int32Ptr(port.Port),
 				EnableFloatingIP: to.BoolPtr(true),
 			},
+		}
+
+		// we didn't construct the probe objects for UDP because they're not used/needed/allowed
+		if port.Protocol != v1.ProtocolUDP {
+			expectedRules[i].Probe = &network.SubResource{
+				ID: to.StringPtr(az.getLoadBalancerProbeID(lbName, lbRuleName)),
+			}
 		}
 	}
 
@@ -680,7 +691,7 @@ func (az *Cloud) reconcileSecurityGroup(sg network.SecurityGroup, clusterName st
 			expectedSecurityRules[ix] = network.SecurityRule{
 				Name: to.StringPtr(securityRuleName),
 				SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
-					Protocol:                 securityProto,
+					Protocol:                 *securityProto,
 					SourcePortRange:          to.StringPtr("*"),
 					DestinationPortRange:     to.StringPtr(strconv.Itoa(int(port.Port))),
 					SourceAddressPrefix:      to.StringPtr(sourceAddressPrefixes[j]),
