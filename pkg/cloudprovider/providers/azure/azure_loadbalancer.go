@@ -503,10 +503,11 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 	} else {
 		ports = []v1.ServicePort{}
 	}
-	expectedProbes := make([]network.Probe, len(ports))
-	expectedRules := make([]network.LoadBalancingRule, len(ports))
-	for i, port := range ports {
-		lbRuleName := getRuleName(service, port)
+
+	var expectedProbes []network.Probe
+	var expectedRules []network.LoadBalancingRule
+	for _, port := range ports {
+		lbRuleName := getLoadBalancerRuleName(service, port)
 
 		transportProto, _, probeProto, err := getProtocolsFromKubernetesProtocol(port.Protocol)
 		if err != nil {
@@ -523,7 +524,7 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 
 			podPresencePath, podPresencePort := serviceapi.GetServiceHealthCheckPathPort(service)
 
-			expectedProbes[i] = network.Probe{
+			expectedProbes = append(expectedProbes, network.Probe{
 				Name: &lbRuleName,
 				ProbePropertiesFormat: &network.ProbePropertiesFormat{
 					RequestPath:       to.StringPtr(podPresencePath),
@@ -532,9 +533,9 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 					IntervalInSeconds: to.Int32Ptr(5),
 					NumberOfProbes:    to.Int32Ptr(2),
 				},
-			}
+			})
 		} else {
-			expectedProbes[i] = network.Probe{
+			expectedProbes = append(expectedProbes, network.Probe{
 				Name: &lbRuleName,
 				ProbePropertiesFormat: &network.ProbePropertiesFormat{
 					Protocol:          *probeProto,
@@ -542,15 +543,14 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 					IntervalInSeconds: to.Int32Ptr(5),
 					NumberOfProbes:    to.Int32Ptr(2),
 				},
-			}
+			})
 		}
 
 		loadDistribution := network.Default
 		if service.Spec.SessionAffinity == v1.ServiceAffinityClientIP {
-			// TODO: code review: do we want to do SourceIP or SourceIPProtocol ?
 			loadDistribution = network.SourceIP
 		}
-		expectedRules[i] = network.LoadBalancingRule{
+		expectedRule := network.LoadBalancingRule{
 			Name: &lbRuleName,
 			LoadBalancingRulePropertiesFormat: &network.LoadBalancingRulePropertiesFormat{
 				Protocol: *transportProto,
@@ -569,10 +569,12 @@ func (az *Cloud) reconcileLoadBalancer(lb network.LoadBalancer, fipConfiguration
 
 		// we didn't construct the probe objects for UDP because they're not used/needed/allowed
 		if port.Protocol != v1.ProtocolUDP {
-			expectedRules[i].Probe = &network.SubResource{
+			expectedRule.Probe = &network.SubResource{
 				ID: to.StringPtr(az.getLoadBalancerProbeID(lbName, lbRuleName)),
 			}
 		}
+
+		expectedRules = append(expectedRules, expectedRule)
 	}
 
 	// remove unwanted probes
@@ -687,18 +689,15 @@ func (az *Cloud) reconcileSecurityGroup(sg network.SecurityGroup, clusterName st
 	expectedSecurityRules := make([]network.SecurityRule, len(ports)*len(sourceAddressPrefixes))
 
 	for i, port := range ports {
-		securityRuleName := getRuleName(service, port)
 		_, securityProto, _, err := getProtocolsFromKubernetesProtocol(port.Protocol)
 		if err != nil {
 			return sg, false, err
 		}
 		for j := range sourceAddressPrefixes {
 			ix := i*len(sourceAddressPrefixes) + j
-			safePrefix := strings.Replace(sourceAddressPrefixes[j], "/", "_", -1)
-			prefixRuleName := fmt.Sprintf("%s-%d-%s", securityRuleName, ix, safePrefix)
-
+			securityRuleName := getSecurityRuleName(service, port, sourceAddressPrefixes[j])
 			expectedSecurityRules[ix] = network.SecurityRule{
-				Name: to.StringPtr(prefixRuleName),
+				Name: to.StringPtr(securityRuleName),
 				SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
 					Protocol:                 *securityProto,
 					SourcePortRange:          to.StringPtr("*"),
