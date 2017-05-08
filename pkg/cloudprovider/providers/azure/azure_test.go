@@ -253,8 +253,8 @@ func TestReconcileSecurityWithSourceRanges(t *testing.T) {
 	az := getTestCloud()
 	svc := getTestService("servicea", 80, 443)
 	svc.Spec.LoadBalancerSourceRanges = []string{
-		"192.168.0.1/24",
-		"10.0.0.1/32",
+		"192.168.0.0/24",
+		"10.0.0.0/32",
 	}
 
 	sg := getTestSecurityGroup(svc)
@@ -373,12 +373,17 @@ func getTestSecurityGroup(services ...v1.Service) network.SecurityGroup {
 		for _, port := range service.Spec.Ports {
 			sources := getServiceSourceRanges(&service)
 			for _, src := range sources {
+				priority, err := getNextAvailablePriority(rules)
+				if err != nil {
+					panic("unexpected err getting next available priority")
+				}
 				ruleName := getSecurityRuleName(&service, port, src)
 				rules = append(rules, network.SecurityRule{
 					Name: to.StringPtr(ruleName),
 					SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
 						SourceAddressPrefix:  to.StringPtr(src),
 						DestinationPortRange: to.StringPtr(fmt.Sprintf("%d", port.Port)),
+						Priority:             to.Int32Ptr(priority),
 					},
 				})
 			}
