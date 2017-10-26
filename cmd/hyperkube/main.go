@@ -36,7 +36,6 @@ func main() {
 	hk.AddServer(NewKubectlServer())
 	hk.AddServer(NewKubeAPIServer())
 	hk.AddServer(NewKubeControllerManager())
-	hk.AddServer(NewCloudControllerManager())
 	hk.AddServer(NewScheduler())
 	if kubelet, err := NewKubelet(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -50,6 +49,9 @@ func main() {
 	//Federation servers
 	hk.AddServer(NewFederationAPIServer())
 	hk.AddServer(NewFederationCMServer())
+
+	// Alpha servers
+	hk.AddAlphaServer(NewCloudControllerManager())
 
 	hk.RunToExit(os.Args)
 }
