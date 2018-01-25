@@ -34,11 +34,8 @@ import (
 	corelisters "k8s.io/kubernetes/pkg/client/listers/core/internalversion"
 	kubeapiserveradmission "k8s.io/kubernetes/pkg/kubeapiserver/admission"
 	"k8s.io/kubernetes/pkg/kubeapiserver/admission/util"
+	"k8s.io/kubernetes/pkg/scheduler/algorithm"
 )
-
-// The annotation key scheduler.alpha.kubernetes.io/node-selector is for assigning
-// node selectors labels to namespaces
-var NamespaceNodeSelectors = []string{"scheduler.alpha.kubernetes.io/node-selector"}
 
 const PluginName = "PodNodeSelector"
 
@@ -238,21 +235,20 @@ func (p *podNodeSelector) getNodeSelectorMap(namespace *api.Namespace) (labels.S
 	labelsMap := labels.Set{}
 	var err error
 	found := false
+	annotation := algorithm.AnnotationNamespaceNodeSelector
 	if len(namespace.ObjectMeta.Annotations) > 0 {
-		for _, annotation := range NamespaceNodeSelectors {
-			if ns, ok := namespace.ObjectMeta.Annotations[annotation]; ok {
-				labelsMap, err = labels.ConvertSelectorToLabelsMap(ns)
-				if err != nil {
-					return labels.Set{}, err
-				}
-
-				if labels.Conflicts(selector, labelsMap) {
-					nsName := namespace.ObjectMeta.Name
-					return labels.Set{}, fmt.Errorf("%s annotations' node label selectors conflict", nsName)
-				}
-				selector = labels.Merge(selector, labelsMap)
-				found = true
+		if ns, ok := namespace.ObjectMeta.Annotations[annotation]; ok {
+			labelsMap, err = labels.ConvertSelectorToLabelsMap(ns)
+			if err != nil {
+				return labels.Set{}, err
 			}
+
+			if labels.Conflicts(selector, labelsMap) {
+				nsName := namespace.ObjectMeta.Name
+				return labels.Set{}, fmt.Errorf("%s annotations' node label selectors conflict", nsName)
+			}
+			selector = labels.Merge(selector, labelsMap)
+			found = true
 		}
 	}
 	if !found {

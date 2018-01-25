@@ -53,10 +53,12 @@ func Register(plugins *admission.Plugins) {
 	})
 }
 
+// Remove after deprecation period (deprecated in 1.10)
 // The annotation keys for default and whitelist of tolerations
+// TODO(@colemickens): per resourer recommendations/past PR: convert these to a newer version (https://github.com/kubernetes/kubernetes/pull/51266)
 const (
-	NSDefaultTolerations string = "scheduler.alpha.kubernetes.io/defaultTolerations"
-	NSWLTolerations      string = "scheduler.alpha.kubernetes.io/tolerationsWhitelist"
+	deprecatedAnnotationDefaultTolerations    string = "scheduler.alpha.kubernetes.io/defaultTolerations"
+	deprecatedAnnotationTolerationsWhitelist  string = "scheduler.alpha.kubernetes.io/tolerationsWhitelist"
 )
 
 var _ admission.MutationInterface = &podTolerationsPlugin{}
@@ -78,7 +80,7 @@ type podTolerationsPlugin struct {
 // otherwise rejected. If a namespace does not have associated default or whitelist
 // of tolerations, then cluster level default or whitelist of tolerations are used
 // instead if specified. Tolerations to a namespace are assigned via
-// scheduler.alpha.kubernetes.io/defaultTolerations and scheduler.alpha.kubernetes.io/tolerationsWhitelist
+// scheduler.kubernetes.io/defaultTolerations and scheduler.kubernetes.io/tolerationsWhitelist
 // annotations keys.
 func (p *podTolerationsPlugin) Admit(a admission.Attributes) error {
 	if shouldIgnore(a) {
@@ -245,7 +247,7 @@ func (p *podTolerationsPlugin) getNamespaceDefaultTolerations(nsName string) ([]
 	if err != nil {
 		return nil, err
 	}
-	return extractNSTolerations(ns, NSDefaultTolerations)
+	return extractNSTolerations(ns, algorithm.AnnotationDefaultTolerations)
 }
 
 func (p *podTolerationsPlugin) getNamespaceTolerationsWhitelist(nsName string) ([]api.Toleration, error) {
@@ -253,12 +255,12 @@ func (p *podTolerationsPlugin) getNamespaceTolerationsWhitelist(nsName string) (
 	if err != nil {
 		return nil, err
 	}
-	return extractNSTolerations(ns, NSWLTolerations)
+	return extractNSTolerations(ns, algorithm.AnnotationTolerationsWhitelist)
 }
 
 // extractNSTolerations extracts default or whitelist of tolerations from
-// following namespace annotations keys: "scheduler.alpha.kubernetes.io/defaultTolerations"
-// and "scheduler.alpha.kubernetes.io/tolerationsWhitelist". If these keys are
+// following namespace annotations keys: "scheduler.kubernetes.io/defaultTolerations"
+// and "scheduler.kubernetes.io/tolerationsWhitelist". If these keys are
 // unset (nil), extractNSTolerations returns nil. If the value to these
 // keys are set to empty, an empty toleration is returned, otherwise
 // configured tolerations are returned.
@@ -268,7 +270,7 @@ func extractNSTolerations(ns *api.Namespace, key string) ([]api.Toleration, erro
 		return nil, nil
 	}
 
-	// if NSWLTolerations or NSDefaultTolerations does not exist
+	// if algorithm.AnnotationTolerationsWhitelist or algorithm.AnnotationDefaultTolerations does not exist
 	if _, ok := ns.Annotations[key]; !ok {
 		return nil, nil
 	}
