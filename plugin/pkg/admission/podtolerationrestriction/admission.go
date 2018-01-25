@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/golang/glog"
+	"time"
 
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -53,11 +53,8 @@ func Register(plugins *admission.Plugins) {
 	})
 }
 
-// The annotation keys for default and whitelist of tolerations
-const (
-	NSDefaultTolerations string = "scheduler.alpha.kubernetes.io/defaultTolerations"
-	NSWLTolerations      string = "scheduler.alpha.kubernetes.io/tolerationsWhitelist"
-)
+var defaultTolerationsAnnotations = []string{algorithm.AnnotationDefaultTolerations, algorithm.DeprecatedAnnotationDefaultTolerations}
+var tolerationsWhitelistAnnotations = []string{algorithm.AnnotationTolerationsWhitelist, algorithm.DeprecatedAnnotationTolerationsWhitelist}
 
 var _ admission.MutationInterface = &podTolerationsPlugin{}
 var _ admission.ValidationInterface = &podTolerationsPlugin{}
@@ -78,7 +75,7 @@ type podTolerationsPlugin struct {
 // otherwise rejected. If a namespace does not have associated default or whitelist
 // of tolerations, then cluster level default or whitelist of tolerations are used
 // instead if specified. Tolerations to a namespace are assigned via
-// scheduler.alpha.kubernetes.io/defaultTolerations and scheduler.alpha.kubernetes.io/tolerationsWhitelist
+// scheduler.kubernetes.io/defaultTolerations and scheduler.kubernetes.io/tolerations-whitelist
 // annotations keys.
 func (p *podTolerationsPlugin) Admit(a admission.Attributes) error {
 	if shouldIgnore(a) {
@@ -96,7 +93,7 @@ func (p *podTolerationsPlugin) Admit(a admission.Attributes) error {
 		return err
 	}
 	if a.GetOperation() == admission.Create || updateUninitialized {
-		ts, err := p.getNamespaceDefaultTolerations(a.GetNamespace())
+		ts, err := p.getNamespaceTolerations(a.GetNamespace(), defaultTolerationsAnnotations)
 		if err != nil {
 			return err
 		}
@@ -151,7 +148,7 @@ func (p *podTolerationsPlugin) Validate(a admission.Attributes) error {
 	// whitelist verification.
 	pod := a.GetObject().(*api.Pod)
 	if len(pod.Spec.Tolerations) > 0 {
-		whitelist, err := p.getNamespaceTolerationsWhitelist(a.GetNamespace())
+		whitelist, err := p.getNamespaceTolerations(a.GetNamespace(), tolerationsWhitelistAnnotations)
 		if err != nil {
 			return err
 		}
@@ -186,7 +183,6 @@ func shouldIgnore(a admission.Attributes) bool {
 	obj := a.GetObject()
 	_, ok := obj.(*api.Pod)
 	if !ok {
-		glog.Errorf("expected pod but got %s", a.GetKind().Kind)
 		return true
 	}
 
@@ -223,10 +219,16 @@ func (p *podTolerationsPlugin) ValidateInitialization() error {
 
 // in exceptional cases, this can result in two live calls, but once the cache catches up, that will stop.
 func (p *podTolerationsPlugin) getNamespace(nsName string) (*api.Namespace, error) {
+
 	namespace, err := p.namespaceLister.Get(nsName)
 	if errors.IsNotFound(err) {
 		// in case of latency in our caches, make a call direct to storage to verify that it truly exists or not
 		namespace, err = p.client.Core().Namespaces().Get(nsName, metav1.GetOptions{})
+
+		// TODO: remove this abomination
+		//if namespace.Name == "" { time.Sleep(3*time.Second); return p.getNamespace(nsName) /* recurse until we get a real ns back */}
+		_ = time.Sleep
+
 		if err != nil {
 			if errors.IsNotFound(err) {
 				return nil, err
@@ -237,49 +239,15 @@ func (p *podTolerationsPlugin) getNamespace(nsName string) (*api.Namespace, erro
 		return nil, errors.NewInternalError(err)
 	}
 
+	if namespace.Name == "" {
+	}
+
 	return namespace, nil
 }
 
-func (p *podTolerationsPlugin) getNamespaceDefaultTolerations(nsName string) ([]api.Toleration, error) {
-	ns, err := p.getNamespace(nsName)
-	if err != nil {
-		return nil, err
-	}
-	return extractNSTolerations(ns, NSDefaultTolerations)
-}
-
-func (p *podTolerationsPlugin) getNamespaceTolerationsWhitelist(nsName string) ([]api.Toleration, error) {
-	ns, err := p.getNamespace(nsName)
-	if err != nil {
-		return nil, err
-	}
-	return extractNSTolerations(ns, NSWLTolerations)
-}
-
-// extractNSTolerations extracts default or whitelist of tolerations from
-// following namespace annotations keys: "scheduler.alpha.kubernetes.io/defaultTolerations"
-// and "scheduler.alpha.kubernetes.io/tolerationsWhitelist". If these keys are
-// unset (nil), extractNSTolerations returns nil. If the value to these
-// keys are set to empty, an empty toleration is returned, otherwise
-// configured tolerations are returned.
-func extractNSTolerations(ns *api.Namespace, key string) ([]api.Toleration, error) {
-	// if a namespace does not have any annotations
-	if len(ns.Annotations) == 0 {
-		return nil, nil
-	}
-
-	// if NSWLTolerations or NSDefaultTolerations does not exist
-	if _, ok := ns.Annotations[key]; !ok {
-		return nil, nil
-	}
-
-	// if value is set to empty
-	if len(ns.Annotations[key]) == 0 {
-		return []api.Toleration{}, nil
-	}
-
+func extractTolerations(value string) ([]api.Toleration, error) {
 	var v1Tolerations []v1.Toleration
-	err := json.Unmarshal([]byte(ns.Annotations[key]), &v1Tolerations)
+	err := json.Unmarshal([]byte(value), &v1Tolerations)
 	if err != nil {
 		return nil, err
 	}
@@ -292,4 +260,51 @@ func extractNSTolerations(ns *api.Namespace, key string) ([]api.Toleration, erro
 	}
 
 	return ts, nil
+}
+
+func (p *podTolerationsPlugin) getNamespaceTolerations(nsName string, annotations []string) ([]api.Toleration, error) {
+	ns, err := p.getNamespace(nsName)
+	if err != nil {
+		return nil, err
+	}
+
+	var nsTolerations []api.Toleration = nil
+	found := false
+
+	if len(ns.ObjectMeta.Annotations) > 0 {
+		for _, key := range annotations {
+			var newTolerations []api.Toleration
+			// annotation isn't set, nothing to consider merging
+			value, ok := ns.Annotations[key]
+			if !ok {
+				continue
+			}
+
+			if len(value) == 0 {
+				// make sure to merge in at least an empty list
+				// so that we return empty instead of nil
+				// (the user is overriding cluster default with blank annotation)
+				newTolerations = []api.Toleration{}
+			} else {
+				newTolerations, err = extractTolerations(value)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			if tolerations.IsConflict(nsTolerations, newTolerations) {
+				return nil, fmt.Errorf("%s annotations' pod toleration restriction tolerations conflict", nsName)
+			}
+			nsTolerations = tolerations.MergeTolerations(nsTolerations, newTolerations)
+			found = true
+		}
+	}
+
+	// if we found an annotation, but nsTolerations is still `nil`, this means that the mergeannotations call
+	// is dropping the empty list of annotations and returning nil. In our usage, the difference matters.
+	if found && nsTolerations == nil {
+		nsTolerations = []api.Toleration{}
+	}
+
+	return nsTolerations, nil
 }
