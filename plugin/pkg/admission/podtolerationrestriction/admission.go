@@ -233,8 +233,13 @@ func (p *podTolerationsPlugin) getNamespace(nsName string) (*api.Namespace, erro
 			}
 			return nil, errors.NewInternalError(err)
 		}
+		if namespace.Name == "" {
+			return nil, fmt.Errorf("got an empty namespace object from client")
+		}
 	} else if err != nil {
 		return nil, errors.NewInternalError(err)
+	} else if namespace.Name == "" {
+		return nil, fmt.Errorf("got an empty namespace object from informer")
 	}
 
 	return namespace, nil
