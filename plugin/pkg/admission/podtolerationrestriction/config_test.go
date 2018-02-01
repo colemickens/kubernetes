@@ -56,14 +56,12 @@ whitelist:
 			expectedWhitelist := []api.Toleration{{Key: "key2", Operator: "Equal", Value: "value2"}}
 
 			if !reflect.DeepEqual(parsed.Default, expectedDefault) {
-				t.Error("failed to parse expected default tolerations. expected: %s. got: %s.", expectedDefault, parsed.Default)
+				t.Errorf("failed to parse expected default tolerations. expected: %s. got: %s.", expectedDefault, parsed.Default)
 			}
 
 			if !reflect.DeepEqual(parsed.Whitelist, expectedWhitelist) {
-				t.Error("failed to parse expected tolerations whitelist. expected: %s. got: %s.", expectedWhitelist, parsed.Whitelist)
+				t.Errorf("failed to parse expected tolerations whitelist. expected: %s. got: %s.", expectedWhitelist, parsed.Whitelist)
 			}
-
-			//log.Printf("%#v\n	", parsed)
 		})
 	}
 }
